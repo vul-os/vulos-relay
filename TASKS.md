@@ -1,8 +1,12 @@
 # Vulos Relay — Task Backlog
 
-**Status: 0 / 16 tasks done.** Greenfield. This repo is the open-source (MIT, Go)
-outbound delivery path for Vulos mail: a warmed-IP **relay** plus a Vulos-to-Vulos
-**peering** transport. The mail *server* (SMTP/IMAP/JMAP + storage) is the sibling
+**Status: 16 / 16 tasks done (100%).** All foundation, sending-engine, deliverability,
+abuse-prevention, and peering tasks are complete, including RELAY-15 (peer detection +
+SMTP fallback in the router) and RELAY-16 (open-relay-abuse prevention / submission
+authentication). The HTTP submission listener (`RELAY_SUBMIT_ADDR`) is wired and
+enabled by default. This repo is the open-source (MIT, Go) outbound delivery path for
+Vulos mail: a warmed-IP **relay** plus a Vulos-to-Vulos **peering** transport. The mail
+*server* (SMTP/IMAP/JMAP + storage) is the sibling
 [vulos-mail](https://github.com/vul-os/vulos-mail) repo (a Mox fork); this repo gets
 mail *out* and keeps sending reputation healthy. Consumed by the closed `vulos-cloud`
 control plane as a multi-tenant warmed-IP service, and fully self-hostable standalone.
@@ -127,7 +131,7 @@ Scope: Extend the reputation policy with a real rolling per-account score comput
 AC: [ ] score combines bounce + complaint + Rspamd + provider signals over a window [ ] threshold crossing → CheckSend returns ErrSuspended immediately [ ] suspension stops the pipeline from leasing more of that account's mail [ ] manual Suspend/Reinstate hooks work [ ] suspended mail deferred/dead-lettered, not dropped [ ] go test ./internal/reputation/...
 
 ### [RELAY-16] Open-relay-abuse prevention (submission authentication)
-`todo` · P0 · M · dep: RELAY-04 · parallel: no — internal/relay/auth.go, internal/relay/pipeline.go
+`done` · P0 · M · dep: RELAY-04 · parallel: no — internal/relay/auth.go, internal/relay/pipeline.go
 Scope: The relay must NEVER forward mail for an unauthenticated or unknown sender. Define a `SubmissionAuthenticator` interface `Authenticate(ctx, msg) (account_id string, err error)` that the pipeline calls as the FIRST gate — before policy, routing, or sending — to bind every message to a known account; messages that fail authentication are rejected outright (dead-lettered with a reason, never delivered). Provide a reference impl that checks an injectable account registry. Also enforce envelope sanity: reject messages whose sender domain the account is not authorized to send for. This gate is mandatory and not bypassable by configuration.
 AC: [ ] unauthenticated/unknown-account message rejected before any send attempt [ ] sender-domain authorization enforced per account [ ] gate runs first in the pipeline, ahead of policy/routing [ ] gate cannot be disabled by config [ ] go test ./internal/relay/...
 
@@ -152,6 +156,6 @@ Scope: Implement the `Sender` for peer recipients per the RELAY-13 spec: resolve
 AC: [ ] resolves peer + builds encrypted envelope per spec [ ] handoff over the PeerTransport interface (in-memory reference impl for tests) [ ] replay-protected: a replayed envelope is rejected [ ] no public DNS / blocklist path touched on the peer branch [ ] peer-branch result classified into SendResult [ ] go test ./internal/peering/...
 
 ### [RELAY-15] Peer detection + SMTP fallback in the router
-`todo` · P2 · M · dep: RELAY-14, RELAY-05 · parallel: no — internal/relay/router.go
+`done` · P2 · M · dep: RELAY-14, RELAY-05 · parallel: no — internal/relay/router.go
 Scope: Implement the real `Router.IsPeer(recipient)` using the peering resolver (RELAY-14): a recipient that resolves to a known Vulos peer takes the peering transport; everything else falls back to the standard SMTP sender (RELAY-05). The decision must be cheap (cache peer-resolution results with a TTL) and the fallback seamless — a non-peer or a peer-resolution failure routes to SMTP without dropping the message. A FAILED peer handoff must NOT silently downgrade onto public SMTP without explicit policy; default is retry/defer on the peer path. Per-recipient routing for multi-recipient messages (some peers, some not) splits correctly.
 AC: [ ] peer recipient → peering transport; non-peer → SMTP [ ] peer-resolution result cached with a TTL [ ] mixed-recipient message splits peer vs SMTP correctly [ ] failed peer handoff defers/retries on the peer path (no silent SMTP downgrade) [ ] go test ./internal/relay/...

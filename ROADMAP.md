@@ -1,5 +1,18 @@
 # Vulos Relay — Roadmap
 
+> **Implementation status:** All 16 tasks in `TASKS.md` are complete. The
+> foundation (queue interface, reputation-policy interface, send pipeline),
+> sending engine (Mox `smtpclient`, pool segmentation), deliverability
+> automation (warm-up ramp, postmaster tools, blocklist monitoring, DKIM
+> rotation, Rspamd outbound scan), abuse defense (per-account scoring, instant
+> suspension, open-relay-abuse prevention via RELAY-16), and peering
+> (versioned wire spec, transport, peer detection + SMTP fallback via RELAY-15)
+> are all shipped. The HTTP submission listener is wired (`RELAY_SUBMIT_ADDR`,
+> default `:8025`). Static peer config loading (`RELAY_PEER_CONFIG`) is
+> documented in `main.go` as a future extension; the relay operates in SMTP-only
+> mode when no peer config is provided. Peering wire spec versions are stable in
+> `spec/VERSIONS.md`.
+
 Vulos Relay is the open-source outbound delivery path for Vulos mail: a
 warmed-IP **relay** and a Vulos-to-Vulos **peering** transport, in one repo.
 This roadmap is priority-ordered, top to bottom — the sections near the top are

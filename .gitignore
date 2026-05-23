@@ -10,3 +10,7 @@
 # Build artifacts
 /bin/
 /dist/
+
+# macOS + IDE
+.DS_Store
+.claude
