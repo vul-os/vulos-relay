@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/vul-os/vulos-relay/internal/obs"
 	"github.com/vul-os/vulos-relay/internal/peering"
 	"github.com/vul-os/vulos-relay/internal/queue"
 	"github.com/vul-os/vulos-relay/internal/relay"
@@ -343,6 +344,7 @@ Environment variables:
 		return
 	}
 
+	obs.Init()
 	cfg := parseConfig()
 	log.Printf("vulos-relay %s starting", version)
 
@@ -445,6 +447,7 @@ func startSubmitListener(cfg config, auth relay.SubmitAuthenticator, router *rel
 
 	mux := http.NewServeMux()
 	mux.Handle("/submit", h)
+	mux.Handle("/metrics", obs.Handler())
 
 	srv := &http.Server{
 		Addr:              cfg.SubmitAddr,
