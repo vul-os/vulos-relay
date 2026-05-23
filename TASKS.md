@@ -173,3 +173,31 @@ AC: [ ] attestation message encodes score, issuer, TTL, signature [ ] sign path:
 `todo` · P1 · S · dep: RELAY-16 · parallel: yes — cmd/relay/main.go, internal/relay/submit.go (or listener file)
 Add per-IP rate cap to the HTTP submission listener (`RELAY_SUBMIT_ADDR`, default `:8025`). Configurable: `RELAY_SUBMIT_RATE_PER_IP` env var (default 60 req/min per source IP). Return HTTP 429 + `Retry-After` on cap breach. Log cap events to the abuse pipeline. Implement with a sliding-window token bucket per source IP.
 AC: [ ] rate cap enforced per source IP [ ] HTTP 429 + Retry-After returned on cap breach [ ] cap events logged [ ] cap threshold configurable via env var [ ] go test ./internal/relay/... or similar
+
+---
+
+## Area: BYO Mail
+
+_Spec: [`ROADMAP.md §BYO Mail support`](ROADMAP.md)_  ·  _Prefix: `RELAY-BYO-*`_
+_Cross-repo: [`vulos-cloud`](https://github.com/vul-os/vulos-cloud) (BYO-CP-*) · [`vulos-mail`](https://github.com/vul-os/vulos-mail) (MAIL-BYO-*)_
+
+> BYO outbound relay: the warm-up pool handles BYO and hosted customers identically. No
+> distinction at the relay layer for sending reputation. BYO-specific work covers the
+> encrypted queue delivery transport and health-check signal pass-through.
+
+### [RELAY-BYO-01] BYO encrypted queue delivery transport
+`in-progress` · P2 · M · dep: RELAY-14 · parallel: yes — internal/peering/byo_queue.go (new)
+Scope: When a BYO vulos-mail instance polls for queued inbound mail, route the encrypted blob
+transfer over the peering transport (RELAY-14) rather than plain HTTPS where the instance is
+fabric-reachable. This improves delivery reliability for BYO instances behind NAT/CGNAT.
+Fall back to direct HTTPS if peering is unavailable. The blobs are age-encrypted by the time
+they reach the relay — the relay forwards opaque ciphertext, never plaintext.
+AC: [ ] encrypted queue blobs routed via peering transport when instance is fabric-reachable [ ] fallback to HTTPS when peering unavailable [ ] relay never sees plaintext (ciphertext forwarded as-is) [ ] go build ./...
+
+### [RELAY-BYO-02] BYO instance health-signal relay to cloud
+`in-progress` · P3 · S · dep: RELAY-01 · parallel: yes — internal/relay/health.go (new)
+Scope: The relay receives heartbeats from BYO instances over the peering/fabric connection.
+Forward these as health signals to the cloud control plane's health-check endpoint so the
+cloud health-check daemon (BYO-CP-04) can use peering-reachability as a "last seen" signal
+in addition to direct HTTP pings.
+AC: [ ] peering heartbeat from BYO instance forwarded to cloud health endpoint [ ] signal includes instance ULID + timestamp [ ] relay does not buffer or persist health signals [ ] go build ./...

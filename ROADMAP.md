@@ -238,6 +238,24 @@ peering is documented as a spec from day one rather than reverse-engineered late
 
 ---
 
+## BYO Mail support (in progress — parallel implementation)
+
+`vulos-relay` serves BYO and hosted customers identically for outbound sending (the relay pool
+does not care whether the origin is self-hosted or cloud-hosted). The BYO-specific relay work
+covers inbound queue routing and health-check signaling.
+
+**BYO-specific relay responsibilities:**
+- The warm-up relay pool handles outbound SMTP for both BYO and hosted customers at the same R19
+  Vulos Mail tier — no distinction.
+- The MX gateway (inbound) is cloud-side; `vulos-relay` provides the peering transport that
+  delivers decrypted mail from the MX bucket to the BYO instance's queue fetch loop.
+- BYO uptime is not a relay concern — the health-check daemon lives in `vulos-cloud`. The relay
+  queues mail and retries; the 5-day TTL is enforced by the cloud queue.
+
+Cross-repo: see `vulos-cloud/ROADMAP.md §BYO Mail support` and `vulos-mail/ROADMAP.md §BYO Mail support`.
+
+---
+
 ## Future work
 
 ### Federated peering reputation: ReputationAttestation message + signing/verify path
