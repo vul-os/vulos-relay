@@ -199,14 +199,14 @@ func (r *DKIMRotator) Rotate() (DKIMKey, error) {
 	})
 
 	key := DKIMKey{
-		Selector:     selector,
-		Domain:       r.domain,
+		Selector:      selector,
+		Domain:        r.domain,
 		PrivateKeyPEM: privPEM,
 		PublicKeyDNS:  pubB64,
 		DNSTXTRecord:  dnsTXT,
-		CreatedAt:    now,
-		ActiveAt:     now.Add(r.cfg.propagationGrace()),
-		RetireAt:     now.Add(r.cfg.rotationInterval() + r.cfg.propagationGrace() + r.cfg.retentionWindow()),
+		CreatedAt:     now,
+		ActiveAt:      now.Add(r.cfg.propagationGrace()),
+		RetireAt:      now.Add(r.cfg.rotationInterval() + r.cfg.propagationGrace() + r.cfg.retentionWindow()),
 	}
 
 	if err := r.store.Save(key); err != nil {

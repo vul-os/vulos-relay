@@ -157,8 +157,8 @@ func (s *RspamdScanner) Scan(ctx context.Context, rawMessage []byte) (Verdict, e
 
 // rspamdResponse mirrors the relevant fields of the Rspamd /checkv2 JSON response.
 type rspamdResponse struct {
-	Action  string             `json:"action"`
-	Score   float64            `json:"score"`
+	Action  string                 `json:"action"`
+	Score   float64                `json:"score"`
 	Symbols map[string]interface{} `json:"symbols"`
 }
 

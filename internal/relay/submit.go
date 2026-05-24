@@ -60,16 +60,16 @@ type EnqueuedMessage struct {
 type errorCode string
 
 const (
-	codeUnauthenticated   errorCode = "unauthenticated"
-	codeUnknownAccount    errorCode = "unknown_account"
-	codeInvalidSignature  errorCode = "invalid_signature"
-	codeExpired           errorCode = "expired"
-	codeReplayDetected    errorCode = "replay_detected"
-	codeInvalidRequest    errorCode = "invalid_request"
-	codeRejectedByRouter  errorCode = "rejected_by_router"
-	codePayloadTooLarge   errorCode = "payload_too_large"
-	codeInternal          errorCode = "internal_error"
-	codeMethodNotAllowed  errorCode = "method_not_allowed"
+	codeUnauthenticated  errorCode = "unauthenticated"
+	codeUnknownAccount   errorCode = "unknown_account"
+	codeInvalidSignature errorCode = "invalid_signature"
+	codeExpired          errorCode = "expired"
+	codeReplayDetected   errorCode = "replay_detected"
+	codeInvalidRequest   errorCode = "invalid_request"
+	codeRejectedByRouter errorCode = "rejected_by_router"
+	codePayloadTooLarge  errorCode = "payload_too_large"
+	codeInternal         errorCode = "internal_error"
+	codeMethodNotAllowed errorCode = "method_not_allowed"
 )
 
 type errorBody struct {

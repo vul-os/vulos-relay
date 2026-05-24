@@ -14,12 +14,12 @@ import (
 
 func makeMsg(id string) queue.OutboundMessage {
 	return queue.OutboundMessage{
-		ID:        id,
-		AccountID: "acct1",
-		Sender:    "sender@example.com",
+		ID:         id,
+		AccountID:  "acct1",
+		Sender:     "sender@example.com",
 		Recipients: []string{"rcpt@example.com"},
-		RawRFC822: []byte("From: sender@example.com\r\nTo: rcpt@example.com\r\n\r\nHello\r\n"),
-		Metadata:  map[string]string{"key": "val"},
+		RawRFC822:  []byte("From: sender@example.com\r\nTo: rcpt@example.com\r\n\r\nHello\r\n"),
+		Metadata:   map[string]string{"key": "val"},
 	}
 }
 

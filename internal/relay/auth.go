@@ -136,9 +136,9 @@ type AccountRegistry interface {
 // MemAccountRegistry is an in-memory AccountRegistry for tests and standalone
 // use.  Use NewMemAccountRegistry + Register to populate it.
 type MemAccountRegistry struct {
-	mu       sync.RWMutex
-	byID     map[string]*AccountRecord
-	byCN     map[string]*AccountRecord
+	mu   sync.RWMutex
+	byID map[string]*AccountRecord
+	byCN map[string]*AccountRecord
 }
 
 // NewMemAccountRegistry creates an empty MemAccountRegistry.
@@ -200,7 +200,7 @@ type SharedSecretAuth struct {
 	// now is used by tests to override time.Now.
 	now func() time.Time
 
-	mu    sync.Mutex
+	mu sync.Mutex
 	// seen tracks (account_id + ":" + message_id + ":" + ts) nonces that have
 	// been consumed within the replay window.
 	seen map[string]time.Time

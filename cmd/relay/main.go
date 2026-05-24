@@ -235,8 +235,8 @@ type queueEnqueuerAdapter struct {
 	mem *queue.MemQueue
 	fs  *queue.FSQueue
 
-	mu       sync.Mutex
-	approxN  int // best-effort depth counter, advisory only
+	mu      sync.Mutex
+	approxN int // best-effort depth counter, advisory only
 }
 
 func newQueueEnqueuerAdapter(q queue.Queue) (*queueEnqueuerAdapter, error) {

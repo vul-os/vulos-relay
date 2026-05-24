@@ -91,9 +91,9 @@ type BlocklistSource interface {
 // ---- Listing record (internal state) ----------------------------------------
 
 type listingRecord struct {
-	source    string
+	source     string
 	detectedAt time.Time
-	cleared   bool
+	cleared    bool
 	clearedAt  time.Time
 	retryAfter time.Time
 }

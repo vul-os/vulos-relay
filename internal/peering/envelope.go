@@ -267,7 +267,7 @@ func marshalHeader(h Header) []byte {
 	return b
 }
 
-func putStr(b []byte, s string) []byte  { return putBytes(b, []byte(s)) }
+func putStr(b []byte, s string) []byte { return putBytes(b, []byte(s)) }
 func putBytes(b []byte, p []byte) []byte {
 	var l [2]byte
 	binary.BigEndian.PutUint16(l[:], uint16(len(p)))

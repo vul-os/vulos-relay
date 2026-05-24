@@ -22,10 +22,10 @@ const (
 
 // Wire field sizes (bytes).
 const (
-	ed25519PubLen = ed25519.PublicKeySize  // 32
-	x25519PubLen  = 32                      // X25519 public key
-	nonceLen      = 12                      // AES-GCM 96-bit nonce
-	sigLen        = ed25519.SignatureSize   // 64
+	ed25519PubLen = ed25519.PublicKeySize // 32
+	x25519PubLen  = 32                    // X25519 public key
+	nonceLen      = 12                    // AES-GCM 96-bit nonce
+	sigLen        = ed25519.SignatureSize // 64
 )
 
 // Identity is a peer's long-term key material. A peer holds two keypairs: an

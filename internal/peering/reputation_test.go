@@ -99,9 +99,9 @@ func TestCombineScoreWeighting(t *testing.T) {
 		rep    ReputationScore
 		want   float64
 	}{
-		{8.0, 1.0, 8.0},          // perfect rep → no change
-		{8.0, 0.0, 12.0},         // zero rep → 50% inflation (8 * 1.5)
-		{8.0, 0.5, 10.0},         // neutral → 25% inflation (8 * 1.25)
+		{8.0, 1.0, 8.0},  // perfect rep → no change
+		{8.0, 0.0, 12.0}, // zero rep → 50% inflation (8 * 1.5)
+		{8.0, 0.5, 10.0}, // neutral → 25% inflation (8 * 1.25)
 	}
 	for _, tc := range cases {
 		got := CombineScore(tc.rspamd, tc.rep)
@@ -174,13 +174,13 @@ func TestStaleAttestationExpiry(t *testing.T) {
 }
 
 // TestPeeringBackwardsCompatibility verifies that:
-// 1. IsReputationFrame / ParseReputationFrame correctly distinguish reputation
-//    frames from mail envelopes.
-// 2. Normal mail delivery (Seal + LoopbackTransport) still works alongside
-//    the reputation extension.
-// 3. Reputation frames produce ErrCorrupt on the loopback transport (which
-//    validates full peering envelopes), demonstrating they are correctly
-//    segregated from the mail path.
+//  1. IsReputationFrame / ParseReputationFrame correctly distinguish reputation
+//     frames from mail envelopes.
+//  2. Normal mail delivery (Seal + LoopbackTransport) still works alongside
+//     the reputation extension.
+//  3. Reputation frames produce ErrCorrupt on the loopback transport (which
+//     validates full peering envelopes), demonstrating they are correctly
+//     segregated from the mail path.
 func TestPeeringBackwardsCompatibility(t *testing.T) {
 	sender, receiver, res := testPair(t)
 	transport := NewLoopbackTransport()

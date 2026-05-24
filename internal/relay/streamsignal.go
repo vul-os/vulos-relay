@@ -73,12 +73,12 @@ const StreamProtoV1 = "VULOS-STREAM/1"
 // --- sub-protocol message types (VULOS-STREAM/1) ---
 
 const (
-	msgSDPOffer    = byte(1) // client→host (or vice versa): SDP offer
-	msgSDPAnswer   = byte(2) // host→client: SDP answer
-	msgICECand     = byte(3) // either direction: trickled ICE candidate
-	msgP2PFailed   = byte(4) // either direction: P2P negotiation/keepalive failed → open TURN slot
-	msgTURNAck     = byte(5) // relay→requester: TURN slot opened (carries slot token + endpoint)
-	msgTURNClose   = byte(6) // either direction: close the TURN slot for this session
+	msgSDPOffer  = byte(1) // client→host (or vice versa): SDP offer
+	msgSDPAnswer = byte(2) // host→client: SDP answer
+	msgICECand   = byte(3) // either direction: trickled ICE candidate
+	msgP2PFailed = byte(4) // either direction: P2P negotiation/keepalive failed → open TURN slot
+	msgTURNAck   = byte(5) // relay→requester: TURN slot opened (carries slot token + endpoint)
+	msgTURNClose = byte(6) // either direction: close the TURN slot for this session
 )
 
 // signalMsg is the decoded VULOS-STREAM/1 message. Exactly one field group is
@@ -504,10 +504,10 @@ func (s *StreamRelay) FallbackRate() float64 {
 // Snapshot returns a point-in-time view of the relay's stream state for
 // metrics/tests.
 type StreamSnapshot struct {
-	SignalsTotal  uint64
+	SignalsTotal   uint64
 	FallbacksTotal uint64
-	FallbackRate  float64
-	OpenSlots     int
+	FallbackRate   float64
+	OpenSlots      int
 }
 
 // Snapshot returns the current StreamSnapshot.
@@ -557,13 +557,13 @@ func (t *turnSlot) tokenSnapshot() []byte {
 // msgP2PFailed signal, not by STUN-level ALLOCATE.
 
 const (
-	stunMethodBinding         = 0x0001
-	stunClassRequest          = 0x0000
-	stunClassSuccessResponse  = 0x0100
-	stunMagicCookie           = 0x2112A442
-	stunAttrXORMappedAddress  = 0x0020
-	stunFamilyIPv4            = 0x01
-	stunHeaderLen             = 20
+	stunMethodBinding        = 0x0001
+	stunClassRequest         = 0x0000
+	stunClassSuccessResponse = 0x0100
+	stunMagicCookie          = 0x2112A442
+	stunAttrXORMappedAddress = 0x0020
+	stunFamilyIPv4           = 0x01
+	stunHeaderLen            = 20
 )
 
 // HandleSTUNPacket answers one STUN packet. If the packet is a well-formed

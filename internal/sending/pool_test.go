@@ -23,9 +23,9 @@ func mustIP(s string) net.IP {
 func TestPoolSelectDedicated(t *testing.T) {
 	p := sending.NewPool()
 	p.AddEntry(sending.PoolEntry{
-		IP:               mustIP("10.0.0.1"),
-		HELOName:         "mail1.example.com",
-		Segment:          sending.SegmentEstablished,
+		IP:       mustIP("10.0.0.1"),
+		HELOName: "mail1.example.com",
+		Segment:  sending.SegmentEstablished,
 	})
 	p.AddEntry(sending.PoolEntry{
 		IP:               mustIP("10.0.0.99"),

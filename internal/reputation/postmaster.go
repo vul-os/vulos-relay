@@ -53,8 +53,8 @@ type SignalSource interface {
 // ---- shared in-memory signal store ------------------------------------------
 
 type signalStore struct {
-	mu      sync.RWMutex
-	byIP    map[string][]ProviderSignal
+	mu       sync.RWMutex
+	byIP     map[string][]ProviderSignal
 	byDomain map[string][]ProviderSignal
 }
 
@@ -143,8 +143,8 @@ func (c *PostmasterConfig) logger() *log.Logger {
 // If APIKey is empty, all Sync calls are no-ops (a single warning is logged on
 // the first call) — self-hosters without provider access are not penalised.
 type PostmasterClient struct {
-	cfg     PostmasterConfig
-	store   *signalStore
+	cfg        PostmasterConfig
+	store      *signalStore
 	warnedOnce sync.Once
 }
 
@@ -173,9 +173,9 @@ func (c *PostmasterClient) Sync(ctx context.Context) error {
 // postmasterTrafficStats mirrors the relevant fields from the Postmaster Tools
 // REST API response for a single day's traffic stats.
 type postmasterTrafficStats struct {
-	Name           string  `json:"name"`
+	Name                  string  `json:"name"`
 	UserReportedSpamRatio float64 `json:"userReportedSpamRatio"`
-	DomainReputation string  `json:"domainReputation"`
+	DomainReputation      string  `json:"domainReputation"`
 }
 
 func (c *PostmasterClient) syncDomain(ctx context.Context, domain string) error {

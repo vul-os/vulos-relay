@@ -24,14 +24,14 @@ import (
 // the proofs below to drive the listener as a real http.Handler without
 // binding a TCP port.
 type submitTestRig struct {
-	auth     *relay.SharedSecretAuth
-	router   *relay.Router
-	queue    *queue.MemQueue
-	enq      *queueEnqueuerAdapter
-	handler  *relay.SubmitHandler
-	now      time.Time
-	secret   []byte
-	account  string
+	auth    *relay.SharedSecretAuth
+	router  *relay.Router
+	queue   *queue.MemQueue
+	enq     *queueEnqueuerAdapter
+	handler *relay.SubmitHandler
+	now     time.Time
+	secret  []byte
+	account string
 }
 
 func newSubmitTestRig(t *testing.T) *submitTestRig {
