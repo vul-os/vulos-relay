@@ -310,3 +310,14 @@ Configurable via environment variable or config file: `RELAY_SUBMIT_RATE_PER_IP`
 60 requests/min per source IP). Return HTTP 429 with `Retry-After` header on cap breach.
 Log rate-cap events to the abuse/reputation pipeline. Small, safe, high-impact DoS defence
 for the submission path.
+
+---
+
+## Fabric-P2P sync, streaming signaling & deliverability isolation (v6)
+
+**Fabric-P2P sync:** direct box-to-box CRDT delta + blob sync over the fabric (leaderless, NAT-friendly),
+including same-LAN local discovery so two boxes on one LAN sync with the internet down — removing the central
+dependency for sync. **Streaming signaling:** WebRTC signaling relay + STUN/TURN NAT-traversal for low-latency
+streaming, with media P2P and the relay as an egress-aware TURN fallback only. **Deliverability isolation:**
+per-pool-segment circuit-breaker that auto-quarantines a warm-IP segment on a blocklist/complaint threshold so
+one bad sender can't blocklist the whole pool. Tasks: `SYNC-P2P-01`, `STREAM-RELAY-01`, `RISK-DELIV-01`.
