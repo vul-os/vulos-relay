@@ -236,7 +236,7 @@ func TestBuildPolicy(t *testing.T) {
 // custom Dialer and an invalid one logs-and-falls-back (no panic).
 func TestBuildSMTPSenderBinding(t *testing.T) {
 	validCfg := config{SMTPLocalIP: "127.0.0.1"}
-	s := buildSMTPSender(validCfg)
+	s := buildSMTPSender(validCfg, nil)
 	if s.Dialer == nil {
 		t.Error("expected Dialer to be set for valid IP")
 	}
@@ -251,7 +251,7 @@ func TestBuildSMTPSenderBinding(t *testing.T) {
 
 	// Invalid IP: should fall back gracefully (Dialer remains nil).
 	invalidCfg := config{SMTPLocalIP: "not-an-ip"}
-	s2 := buildSMTPSender(invalidCfg)
+	s2 := buildSMTPSender(invalidCfg, nil)
 	if s2.Dialer != nil {
 		t.Error("expected Dialer to be nil for invalid IP")
 	}

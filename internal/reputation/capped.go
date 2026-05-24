@@ -16,6 +16,13 @@ type accountState struct {
 	dayStart  time.Time
 	sentToday int
 
+	// reserved counts gate-time reservations awaiting a RecordResult
+	// reconciliation.  Each CheckSend that returns Allow=true increments both
+	// sentToday and reserved; RecordResult decrements reserved and, for
+	// transient (deferred) outcomes that will be retried, also decrements
+	// sentToday to release the quota.
+	reserved int
+
 	// Suspension.
 	suspended bool
 	suspendAt time.Time
@@ -111,6 +118,7 @@ func (p *CappedPolicy) CheckSend(_ context.Context, accountID string, _ Message)
 	if now.Before(a.dayStart) || now.Sub(a.dayStart) >= 24*time.Hour {
 		a.dayStart = utcDayStart(now)
 		a.sentToday = 0
+		a.reserved = 0
 	}
 
 	cap := p.dailyCap()
@@ -123,6 +131,14 @@ func (p *CappedPolicy) CheckSend(_ context.Context, accountID string, _ Message)
 		}, ErrRateLimited
 	}
 
+	// Reserve a slot at the gate (atomically, under p.mu) so concurrent workers
+	// cannot all pass the check before any of them records a result.  The slot
+	// is released by RecordResult when the attempt ends in a non-counting state
+	// (deferred), or kept when the send is delivered/bounced.  Tracking the
+	// reservation count separately lets RecordResult reconcile precisely.
+	a.sentToday++
+	a.reserved++
+
 	return Decision{Allow: true, Reason: "within cap"}, nil
 }
 
@@ -133,8 +149,22 @@ func (p *CappedPolicy) RecordResult(_ context.Context, accountID string, result 
 
 	a := p.account(accountID)
 
-	// Increment daily counter on any send attempt.
-	if result.State == SendDelivered || result.State == SendBounced {
+	// Reconcile the gate-time reservation.  The slot was already counted against
+	// sentToday in CheckSend; here we either keep it (terminal outcome consumed
+	// the quota) or release it (transient deferral that will be retried).
+	if a.reserved > 0 {
+		a.reserved--
+		if result.State == SendDeferred {
+			// Transient failure → the message will be retried and re-gated,
+			// so release the reserved slot to avoid permanently burning quota.
+			if a.sentToday > 0 {
+				a.sentToday--
+			}
+		}
+	} else if result.State == SendDelivered || result.State == SendBounced {
+		// No outstanding reservation (e.g. a result recorded without a prior
+		// CheckSend, as in unit tests or out-of-band sends) — count it directly
+		// so the cap still reflects real volume.
 		a.sentToday++
 	}
 

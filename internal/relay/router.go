@@ -5,9 +5,14 @@ package relay
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -304,16 +309,65 @@ type fileSpoolWriter struct {
 	dir string
 }
 
+// spoolFile is the JSON-framed representation of an inbound envelope written to
+// the file spool.
+type spoolFile struct {
+	From         string    `json:"from"`
+	To           []string  `json:"to"`
+	PeerEndpoint string    `json:"peer_endpoint"`
+	ReceivedAt   time.Time `json:"received_at"`
+	RawRFC822    []byte    `json:"raw_rfc822"`
+}
+
+// Write persists env as a JSON-framed file under f.dir.  The write is atomic:
+// the payload is written to a temp file in the same directory and renamed into
+// place, so a reader never observes a partial file.  An error is returned (and
+// surfaced as ErrSpoolFull by RouteInbound) if the directory is missing or the
+// write fails — the spool never fails silently.
 func (f *fileSpoolWriter) Write(_ context.Context, env InboundEnvelope) error {
 	if f.dir == "" {
 		return errors.New("spool dir not set")
 	}
-	// In the reference implementation we simply validate the dir exists.
-	// A full implementation would write a JSON-framed file to f.dir.
-	// We intentionally do NOT import os/ioutil here to keep the package lean
-	// and testable without a real filesystem; operators inject their own
-	// SpoolWriter.
-	return fmt.Errorf("file spool not implemented: inject a SpoolWriter via RouterConfig.Spool")
+	if err := os.MkdirAll(f.dir, 0o700); err != nil {
+		return fmt.Errorf("create spool dir %q: %w", f.dir, err)
+	}
+
+	payload, err := json.Marshal(spoolFile{
+		From:         env.From,
+		To:           env.To,
+		PeerEndpoint: env.PeerEndpoint,
+		ReceivedAt:   time.Now().UTC(),
+		RawRFC822:    env.RawRFC822,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal spool envelope: %w", err)
+	}
+
+	name, err := spoolFileName()
+	if err != nil {
+		return err
+	}
+	finalPath := filepath.Join(f.dir, name+".json")
+	tmpPath := finalPath + ".tmp"
+
+	if err := os.WriteFile(tmpPath, payload, 0o600); err != nil {
+		return fmt.Errorf("write spool temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("commit spool file: %w", err)
+	}
+	return nil
+}
+
+// spoolFileName returns a sortable, collision-resistant spool file basename:
+// a UTC nanosecond timestamp followed by random hex.
+func spoolFileName() (string, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("spool filename entropy: %w", err)
+	}
+	return fmt.Sprintf("%020d-%s", time.Now().UTC().UnixNano(), hex.EncodeToString(b[:])), nil
 }
 
 // looksLikeAddress returns true when s looks like a plausible RFC-5321 address.

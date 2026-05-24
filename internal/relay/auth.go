@@ -13,7 +13,6 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
-	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
@@ -200,17 +199,35 @@ type SharedSecretAuth struct {
 	// now is used by tests to override time.Now.
 	now func() time.Time
 
+	// MaxNonces is a hard safety cap on the number of retained nonces.  When the
+	// cache exceeds this size the oldest time-bucket is dropped early.  Zero
+	// uses defaultMaxNonces.
+	MaxNonces int
+
 	mu sync.Mutex
-	// seen tracks (account_id + ":" + message_id + ":" + ts) nonces that have
-	// been consumed within the replay window.
-	seen map[string]time.Time
+	// seen indexes consumed nonces for fast membership test.  The value is the
+	// expiry-bucket second the nonce lives in, so it can be removed from buckets
+	// when evicted.
+	seen map[string]int64
+	// buckets groups nonces by their expiry second.  Eviction walks only the
+	// buckets whose second has passed (amortized O(1) per call) instead of
+	// scanning the entire nonce set on every authentication.
+	buckets map[int64]map[string]struct{}
+	// minBucket is the lowest bucket second present, so eviction starts there
+	// rather than iterating all buckets.
+	minBucket int64
 }
+
+// defaultMaxNonces bounds the replay cache so a flood of distinct nonces cannot
+// grow memory without limit within the skew window.
+const defaultMaxNonces = 1 << 20 // ~1M entries
 
 // NewSharedSecretAuth creates a SharedSecretAuth backed by registry.
 func NewSharedSecretAuth(registry AccountRegistry) *SharedSecretAuth {
 	return &SharedSecretAuth{
 		Registry: registry,
-		seen:     make(map[string]time.Time),
+		seen:     make(map[string]int64),
+		buckets:  make(map[int64]map[string]struct{}),
 	}
 }
 
@@ -279,20 +296,111 @@ func (a *SharedSecretAuth) Authenticate(ctx context.Context, creds Credentials) 
 		a.mu.Unlock()
 		return "", fmt.Errorf("%w: nonce %q", ErrReplayDetected, nonce)
 	}
-	a.seen[nonce] = now.Add(a.skew() * 2) // expire nonce after 2× skew window
+	// Expire the nonce after 2× the skew window (the widest interval over which
+	// the same nonce could be re-presented and still pass the timestamp check).
+	expiry := now.Add(a.skew() * 2).Unix()
+	a.insertNonceLocked(nonce, expiry)
 	a.mu.Unlock()
 
 	return rec.AccountID, nil
 }
 
-// evictExpiredLocked removes nonces whose expiry has passed.  Must be called
-// with a.mu held.
-func (a *SharedSecretAuth) evictExpiredLocked(now time.Time) {
-	for k, exp := range a.seen {
-		if now.After(exp) {
-			delete(a.seen, k)
+func (a *SharedSecretAuth) maxNonces() int {
+	if a.MaxNonces > 0 {
+		return a.MaxNonces
+	}
+	return defaultMaxNonces
+}
+
+// insertNonceLocked records nonce in both the index and its expiry bucket.
+// Must be called with a.mu held.
+func (a *SharedSecretAuth) insertNonceLocked(nonce string, bucket int64) {
+	a.seen[nonce] = bucket
+	b := a.buckets[bucket]
+	if b == nil {
+		b = make(map[string]struct{})
+		a.buckets[bucket] = b
+		if a.minBucket == 0 || bucket < a.minBucket {
+			a.minBucket = bucket
 		}
 	}
+	b[nonce] = struct{}{}
+
+	// Hard safety cap: if the cache is over-full, drop whole oldest buckets
+	// until back under the limit.  This bounds memory even under a flood of
+	// distinct nonces within the skew window.  Recompute minBucket after each
+	// drop so we always target a live bucket and the loop makes progress.
+	for len(a.seen) > a.maxNonces() && len(a.buckets) > 0 {
+		a.recomputeMinBucketLocked()
+		a.dropBucketLocked(a.minBucket)
+	}
+	if len(a.buckets) == 0 {
+		a.minBucket = 0
+	}
+}
+
+// evictExpiredLocked removes nonces whose expiry bucket has passed.  Because
+// nonces are grouped by expiry second, eviction walks only the handful of
+// elapsed bucket-seconds rather than scanning the entire nonce set — amortized
+// O(1) per authentication.  Must be called with a.mu held.
+func (a *SharedSecretAuth) evictExpiredLocked(now time.Time) {
+	if len(a.buckets) == 0 {
+		a.minBucket = 0
+		return
+	}
+	cutoff := now.Unix()
+	// Walk forward from the lowest known bucket second, dropping any bucket
+	// whose second is at or before the cutoff.  Bucket seconds are sparse but
+	// monotonically increasing, so advancing minBucket bounds future work.
+	//
+	// Cap the number of empty-second probes so a long idle gap cannot turn one
+	// call into a multi-thousand-iteration scan: once we exceed maxProbe misses
+	// we recompute the true minimum directly from the bucket map.
+	const maxProbe = 8
+	misses := 0
+	for a.minBucket > 0 && a.minBucket <= cutoff {
+		if _, ok := a.buckets[a.minBucket]; ok {
+			a.dropBucketLocked(a.minBucket)
+			misses = 0
+		} else {
+			misses++
+		}
+		a.minBucket++
+		if len(a.buckets) == 0 {
+			a.minBucket = 0
+			return
+		}
+		if misses > maxProbe {
+			a.recomputeMinBucketLocked()
+			misses = 0
+		}
+	}
+}
+
+// recomputeMinBucketLocked finds the lowest live bucket second.  Used to skip
+// over long runs of empty seconds after an idle period.  Must be called with
+// a.mu held.
+func (a *SharedSecretAuth) recomputeMinBucketLocked() {
+	min := int64(0)
+	for sec := range a.buckets {
+		if min == 0 || sec < min {
+			min = sec
+		}
+	}
+	a.minBucket = min
+}
+
+// dropBucketLocked removes an entire expiry bucket and all its nonces.  It does
+// not adjust minBucket; callers manage that.  Must be called with a.mu held.
+func (a *SharedSecretAuth) dropBucketLocked(bucket int64) {
+	b, ok := a.buckets[bucket]
+	if !ok {
+		return
+	}
+	for nonce := range b {
+		delete(a.seen, nonce)
+	}
+	delete(a.buckets, bucket)
 }
 
 // computeHMAC returns the raw HMAC-SHA256 digest for the given fields.
@@ -363,14 +471,3 @@ func (a *MutualTLSAuth) Authenticate(ctx context.Context, creds Credentials) (st
 func subjectCN(cert *x509.Certificate) string {
 	return strings.TrimSpace(cert.Subject.CommonName)
 }
-
-// ─── ConstantTimeEqual helper ─────────────────────────────────────────────────
-
-// safeEqual returns true only when a and b are identical, using a
-// constant-time comparison to prevent timing oracles.
-func safeEqual(a, b string) bool {
-	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
-}
-
-// keep safeEqual reachable from tests via the package; suppress unused warning.
-var _ = safeEqual

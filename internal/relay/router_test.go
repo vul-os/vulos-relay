@@ -5,7 +5,11 @@ package relay_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -144,6 +148,58 @@ func TestRouteInbound_SpoolWriter(t *testing.T) {
 	defer spool.mu.Unlock()
 	if len(spool.envelopes) != 1 {
 		t.Errorf("expected 1 envelope written, got %d", len(spool.envelopes))
+	}
+}
+
+// TestRouteInbound_FileSpoolWritesFile proves the P2 fix: the file spool writer
+// now actually persists inbound envelopes (previously it returned
+// "not implemented" and SpoolDir silently failed).
+func TestRouteInbound_FileSpoolWritesFile(t *testing.T) {
+	dir := t.TempDir()
+	r := relay.NewRouter(relay.RouterConfig{SpoolDir: dir})
+	env := relay.InboundEnvelope{
+		From:         "sender@peer.example",
+		To:           []string{"local@example.com"},
+		RawRFC822:    []byte("Subject: inbound\r\n\r\nHi there"),
+		PeerEndpoint: "peer.example:443",
+	}
+	if err := r.RouteInbound(context.Background(), env); err != nil {
+		t.Fatalf("expected file-spool RouteInbound to succeed, got: %v", err)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read spool dir: %v", err)
+	}
+	jsonCount := 0
+	var payload []byte
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".json") {
+			jsonCount++
+			payload, _ = os.ReadFile(filepath.Join(dir, e.Name()))
+		}
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Errorf("leftover temp file in spool dir: %s", e.Name())
+		}
+	}
+	if jsonCount != 1 {
+		t.Fatalf("expected exactly 1 spool .json file, got %d", jsonCount)
+	}
+
+	var got struct {
+		From         string   `json:"from"`
+		To           []string `json:"to"`
+		PeerEndpoint string   `json:"peer_endpoint"`
+		RawRFC822    []byte   `json:"raw_rfc822"`
+	}
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("unmarshal spool file: %v", err)
+	}
+	if got.From != env.From || got.PeerEndpoint != env.PeerEndpoint {
+		t.Errorf("spool file content mismatch: %+v", got)
+	}
+	if string(got.RawRFC822) != string(env.RawRFC822) {
+		t.Errorf("spool raw body mismatch: got %q", string(got.RawRFC822))
 	}
 }
 

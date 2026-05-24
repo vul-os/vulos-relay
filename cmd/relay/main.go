@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -79,6 +80,28 @@ type config struct {
 	// RELAY_SUBMIT_MAX_BYTES: maximum submission request body size
 	// (default: 0 → handler default of 16 MiB).
 	SubmitMaxBytes int
+
+	// DKIM signing.
+	// RELAY_DKIM_DOMAIN: signing domain (d= tag). When set, outbound mail is
+	// DKIM-signed with the rotator's current key. Empty = no signing.
+	DKIMDomain string
+	// RELAY_DKIM_KEY_DIR: directory for persisting DKIM keys. Empty = in-memory
+	// (a key is generated at startup and lost on restart).
+	DKIMKeyDir string
+
+	// TLS enforcement policy for outbound SMTP.
+	// RELAY_SMTP_TLS_POLICY: "required" (secure default) or "opportunistic".
+	SMTPTLSPolicy string
+
+	// Warm-IP pool / ramp / blocklist wiring (RELAY-11/RELAY-09/RELAY-12).
+	// RELAY_POOL_IPS: comma-separated list of source IPs to warm and rotate.
+	// Each may be "ip" or "ip@helo" or "ip@helo@segment". Empty = no pool;
+	// the single RELAY_SMTP_LOCAL_IP binding (if any) is used instead.
+	PoolIPs string
+	// RELAY_RAMP_ENABLE: enable the warm-up ramp scheduler over the pool IPs.
+	RampEnable bool
+	// RELAY_BLOCKLIST_ENABLE: enable DNSBL monitoring + quarantine over pool IPs.
+	BlocklistEnable bool
 }
 
 // envString reads an env var, returning def if it is unset or empty.
@@ -133,6 +156,12 @@ func parseConfig() config {
 		SubmitAddr:            envString("RELAY_SUBMIT_ADDR", ":8025"),
 		SubmitDisabled:        envBool("RELAY_SUBMIT_DISABLE", false),
 		SubmitMaxBytes:        envInt("RELAY_SUBMIT_MAX_BYTES", 0),
+		DKIMDomain:            envString("RELAY_DKIM_DOMAIN", ""),
+		DKIMKeyDir:            envString("RELAY_DKIM_KEY_DIR", ""),
+		SMTPTLSPolicy:         envString("RELAY_SMTP_TLS_POLICY", "required"),
+		PoolIPs:               envString("RELAY_POOL_IPS", ""),
+		RampEnable:            envBool("RELAY_RAMP_ENABLE", false),
+		BlocklistEnable:       envBool("RELAY_BLOCKLIST_ENABLE", false),
 	}
 }
 
@@ -281,9 +310,28 @@ func (a *queueEnqueuerAdapter) Depth(_ context.Context) int {
 	return a.approxN
 }
 
-// buildSMTPSender constructs an SMTPSender with optional source binding.
-func buildSMTPSender(cfg config) *sending.SMTPSender {
-	s := &sending.SMTPSender{}
+// buildSMTPSender constructs an SMTPSender with optional source binding, DKIM
+// signing, and a TLS-enforcement policy.
+func buildSMTPSender(cfg config, signer sending.MessageSigner) *sending.SMTPSender {
+	s := &sending.SMTPSender{Signer: signer}
+
+	// TLS policy: secure by default (required). The operator must explicitly
+	// opt out per the documented knob to permit plaintext downgrade.
+	switch cfg.SMTPTLSPolicy {
+	case "opportunistic":
+		s.TLSPolicy = sending.TLSPolicyOpportunistic
+		log.Printf("relay: SMTP TLS policy: opportunistic (plaintext downgrade permitted)")
+	default: // "required" and anything unrecognized → secure default
+		s.TLSPolicy = sending.TLSPolicyRequired
+		if cfg.SMTPTLSPolicy != "required" && cfg.SMTPTLSPolicy != "" {
+			log.Printf("relay: unrecognized RELAY_SMTP_TLS_POLICY=%q, using secure default 'required'", cfg.SMTPTLSPolicy)
+		} else {
+			log.Printf("relay: SMTP TLS policy: required (refuse plaintext downgrade)")
+		}
+	}
+
+	// A single static source binding still applies when no warm-IP pool is
+	// configured. When a pool IS configured, PoolSender overrides msg.Binding.
 	if cfg.SMTPLocalIP != "" {
 		ip := net.ParseIP(cfg.SMTPLocalIP)
 		if ip == nil {
@@ -298,6 +346,149 @@ func buildSMTPSender(cfg config) *sending.SMTPSender {
 		log.Printf("relay: SMTP HELO name: %s", cfg.SMTPHelo)
 	}
 	return s
+}
+
+// buildDKIMSigner builds a DKIM signer wired to a DKIMRotator when
+// RELAY_DKIM_DOMAIN is set. It returns (nil, nil) when DKIM is not configured.
+// The rotator is seeded with a key at startup so outbound mail is signed
+// immediately, and a background goroutine rotates keys on the configured
+// interval.
+func buildDKIMSigner(ctx context.Context, cfg config) (sending.MessageSigner, error) {
+	if cfg.DKIMDomain == "" {
+		log.Printf("relay: DKIM signing DISABLED (set RELAY_DKIM_DOMAIN to enable) — outbound mail will be UNSIGNED")
+		return nil, nil
+	}
+
+	var store sending.KeyStore
+	if cfg.DKIMKeyDir != "" {
+		fs, err := sending.NewFSKeyStore(cfg.DKIMKeyDir)
+		if err != nil {
+			return nil, fmt.Errorf("dkim key store: %w", err)
+		}
+		store = fs
+		log.Printf("relay: DKIM key store: %s", cfg.DKIMKeyDir)
+	} else {
+		store = sending.NewMemKeyStore()
+		log.Printf("relay: DKIM key store: in-memory (keys lost on restart; set RELAY_DKIM_KEY_DIR to persist)")
+	}
+
+	rotator, err := sending.NewDKIMRotator(cfg.DKIMDomain, store, sending.DKIMRotatorConfig{})
+	if err != nil {
+		return nil, fmt.Errorf("dkim rotator: %w", err)
+	}
+
+	// Seed a key if the store is empty so signing works from the first message.
+	if _, err := rotator.CurrentKey(); err != nil {
+		k, rerr := rotator.Rotate()
+		if rerr != nil {
+			return nil, fmt.Errorf("dkim seed key: %w", rerr)
+		}
+		log.Printf("relay: DKIM seeded key selector=%s — publish DNS TXT at %s._domainkey.%s",
+			k.Selector, k.Selector, cfg.DKIMDomain)
+	}
+
+	// Background rotation.
+	go func() {
+		ticker := time.NewTicker(7 * 24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if _, rerr := rotator.Rotate(); rerr != nil {
+					log.Printf("relay: DKIM rotation failed: %v", rerr)
+				}
+			}
+		}
+	}()
+
+	signer, err := sending.NewDKIMSigner(sending.DKIMSignerConfig{
+		Domain:   cfg.DKIMDomain,
+		Provider: rotator,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("dkim signer: %w", err)
+	}
+	log.Printf("relay: DKIM signing ENABLED for domain %s", cfg.DKIMDomain)
+	return signer, nil
+}
+
+// poolEntrySpec parses a RELAY_POOL_IPS element of the form
+// "ip[@helo[@segment]]" into a sending.PoolEntry.
+func parsePoolEntry(spec string) (sending.PoolEntry, bool) {
+	parts := strings.Split(spec, "@")
+	ip := net.ParseIP(strings.TrimSpace(parts[0]))
+	if ip == nil {
+		return sending.PoolEntry{}, false
+	}
+	e := sending.PoolEntry{IP: ip, Segment: sending.SegmentEstablished}
+	if len(parts) >= 2 && parts[1] != "" {
+		e.HELOName = strings.TrimSpace(parts[1])
+	}
+	if len(parts) >= 3 && parts[2] != "" {
+		e.Segment = sending.SegmentName(strings.TrimSpace(parts[2]))
+	}
+	return e, true
+}
+
+// buildPoolSender wires the warm-IP Pool, RampScheduler, and BlocklistMonitor
+// into the send path when RELAY_POOL_IPS is configured. It returns the inner
+// sender unchanged (no pool) when no pool IPs are set.
+func buildPoolSender(ctx context.Context, cfg config, inner sending.Sender) sending.Sender {
+	if cfg.PoolIPs == "" {
+		return inner
+	}
+
+	pool := sending.NewPool()
+	var ips []net.IP
+	for _, spec := range strings.Split(cfg.PoolIPs, ",") {
+		spec = strings.TrimSpace(spec)
+		if spec == "" {
+			continue
+		}
+		entry, ok := parsePoolEntry(spec)
+		if !ok {
+			log.Printf("relay: invalid RELAY_POOL_IPS entry %q, skipping", spec)
+			continue
+		}
+		pool.AddEntry(entry)
+		ips = append(ips, entry.IP)
+		log.Printf("relay: warm-IP pool entry: ip=%s helo=%s segment=%s", entry.IP, entry.HELOName, entry.Segment)
+	}
+	if len(ips) == 0 {
+		log.Printf("relay: RELAY_POOL_IPS set but no valid entries — pool disabled")
+		return inner
+	}
+
+	ps := &sending.PoolSender{
+		Pool:  pool,
+		Inner: inner,
+		// Default selection hint: established. Operators running a static warm
+		// pool want their configured IPs used; the low-trust gating in
+		// Pool.Select is meaningful only when accounts are classified, which a
+		// tenant-aware deployment supplies by overriding SegmentFor.
+		SegmentFor: func(string) sending.SegmentName { return sending.SegmentEstablished },
+	}
+
+	if cfg.RampEnable {
+		ps.Ramp = sending.NewRampScheduler(sending.RampConfig{})
+		log.Printf("relay: warm-up ramp scheduler ENABLED over %d pool IPs", len(ips))
+	}
+
+	if cfg.BlocklistEnable {
+		monitor := reputation.NewBlocklistMonitor(pool, reputation.BlocklistMonitorConfig{})
+		monitor.AddSource(&reputation.SpamhausSource{})
+		monitor.AddSource(&reputation.SORBSSource{})
+		for _, ip := range ips {
+			monitor.WatchIP(ip)
+		}
+		go monitor.Run(ctx)
+		log.Printf("relay: blocklist monitor ENABLED (spamhaus, sorbs) over %d pool IPs", len(ips))
+	}
+
+	log.Printf("relay: warm-IP pool active — outbound IP rotation in effect")
+	return ps
 }
 
 // buildResolver constructs a peering resolver.  If PeerConfig is set, it is
@@ -335,6 +526,12 @@ Environment variables:
   RELAY_SUBMIT_DISABLE         Set to 1 to skip binding the submission listener
   RELAY_SUBMIT_MAX_BYTES       Max submission body size (default: 16 MiB)
   RELAY_ACCOUNTS_SECRET        Shared secret for a bootstrap "default" account
+  RELAY_DKIM_DOMAIN            DKIM signing domain (d=); enables outbound DKIM signing
+  RELAY_DKIM_KEY_DIR           Directory to persist DKIM keys (default: in-memory)
+  RELAY_SMTP_TLS_POLICY        "required" (secure default) or "opportunistic"
+  RELAY_POOL_IPS               Comma-list of warm-IP pool entries: ip[@helo[@segment]]
+  RELAY_RAMP_ENABLE            Enable warm-up ramp caps over pool IPs (1/true)
+  RELAY_BLOCKLIST_ENABLE       Enable DNSBL monitoring + quarantine over pool IPs (1/true)
 `)
 	}
 	flag.Parse()
@@ -363,8 +560,25 @@ Environment variables:
 	// Build reputation policy.
 	policy := buildPolicy(cfg)
 
-	// Build SMTP sender.
-	smtpSender := buildSMTPSender(cfg)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	// Build DKIM signer (wired into the SMTP send path so outbound mail is
+	// authenticated). Disabled unless RELAY_DKIM_DOMAIN is set.
+	dkimSigner, err := buildDKIMSigner(ctx, cfg)
+	if err != nil {
+		log.Fatalf("relay: dkim init: %v", err)
+	}
+
+	// Build SMTP sender (DKIM signing + TLS-enforcement policy).
+	smtpSender := buildSMTPSender(cfg, dkimSigner)
+
+	// Wrap the SMTP egress with the warm-IP pool / ramp / blocklist when
+	// configured so IP rotation, ramp caps, and blocklist quarantine take
+	// effect on public SMTP delivery (the peer path uses its own transport and
+	// is not IP-rotated). When no pool is configured this returns smtpSender
+	// unchanged.
+	smtpEgress := buildPoolSender(ctx, cfg, smtpSender)
 
 	// Build peering resolver and peer sender.
 	resolver := buildResolver(cfg)
@@ -378,7 +592,7 @@ Environment variables:
 	// Wire RoutingSender: peer path wraps SMTP path.
 	routingSender := &peering.RoutingSender{
 		Peer:     peerSender,
-		SMTP:     smtpSender,
+		SMTP:     smtpEgress,
 		Resolver: resolver,
 	}
 
@@ -387,9 +601,6 @@ Environment variables:
 		Workers: cfg.Workers,
 	}
 	pipeline := sending.NewPipeline(q, policy, routingSender, pipelineCfg)
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
 
 	// Start the submission listener alongside the outbound pipeline.
 	srv, srvErr := startSubmitListener(cfg, auth, router, q)

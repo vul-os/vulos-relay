@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log"
 	"net"
 	"net/smtp"
 	"os"
@@ -36,6 +37,50 @@ type SMTPSender struct {
 	// (InsecureSkipVerify=false; standard verification).  A stricter config
 	// with per-MX DANE enforcement can be injected here.
 	TLSConfig *tls.Config
+
+	// Signer, if non-nil, signs every outbound message with a DKIM-Signature
+	// header before the DATA phase.  Inject a *DKIMSigner wired to the
+	// DKIMRotator so all outbound mail is authenticated.
+	Signer MessageSigner
+
+	// TLSPolicy controls STARTTLS enforcement.  The zero value
+	// (TLSPolicyOpportunistic) preserves the historical opportunistic-TLS
+	// behaviour; TLSPolicyRequired refuses to deliver in plaintext when the
+	// remote advertises STARTTLS but the handshake fails (no silent downgrade).
+	TLSPolicy TLSPolicy
+
+	// Logger is used for operational warnings (e.g. unsigned send, TLS
+	// downgrade).  If nil, the standard logger is used.
+	Logger *log.Logger
+}
+
+// MessageSigner adds authentication headers (e.g. DKIM-Signature) to a raw
+// RFC-822 message, returning a new message.  *DKIMSigner implements it.
+type MessageSigner interface {
+	// Sign returns a copy of raw with signing headers prepended.  It must not
+	// mutate raw.
+	Sign(raw []byte) ([]byte, error)
+}
+
+// TLSPolicy controls how STARTTLS failures are handled on the outbound path.
+type TLSPolicy int
+
+const (
+	// TLSPolicyOpportunistic attempts STARTTLS when advertised but falls back
+	// to plaintext if the handshake fails.  This is the historical default.
+	TLSPolicyOpportunistic TLSPolicy = iota
+
+	// TLSPolicyRequired refuses to deliver in plaintext: if the remote
+	// advertises STARTTLS but the handshake fails, the attempt is deferred
+	// rather than silently downgraded.  Use this as a secure default.
+	TLSPolicyRequired
+)
+
+func (s *SMTPSender) logger() *log.Logger {
+	if s.Logger != nil {
+		return s.Logger
+	}
+	return log.Default()
 }
 
 // Send implements Sender.
@@ -117,11 +162,38 @@ func (s *SMTPSender) deliverToMX(ctx context.Context, msg Message, mxHost string
 	if ok, _ := c.Extension("STARTTLS"); ok {
 		tlsCfg := s.tlsConfig(mxHost)
 		if err := c.StartTLS(tlsCfg); err != nil {
-			// STARTTLS failure is non-fatal; continue in plain text.
-			// A stricter policy (e.g. MTA-STS) should be enforced by the
-			// injected TLSConfig or a Mox-based Sender.
-			_ = err
+			if s.TLSPolicy == TLSPolicyRequired {
+				// Secure policy: never deliver in plaintext after a failed
+				// STARTTLS handshake.  Defer so the message is retried rather
+				// than silently downgraded to an unencrypted channel.
+				s.logger().Printf("sending: STARTTLS required but handshake to %s failed: %v — refusing plaintext downgrade", mxHost, err)
+				return SendResult{State: StateDeferred, Message: fmt.Sprintf("STARTTLS required but failed: %v", err)},
+					fmt.Errorf("starttls to %s: %w", mxHost, err)
+			}
+			// Opportunistic policy: STARTTLS failure is non-fatal; continue in
+			// plain text but log the downgrade for operator visibility.
+			s.logger().Printf("sending: STARTTLS to %s failed, continuing in plaintext (opportunistic policy): %v", mxHost, err)
 		}
+	} else if s.TLSPolicy == TLSPolicyRequired {
+		// Remote does not advertise STARTTLS at all; required policy refuses.
+		s.logger().Printf("sending: STARTTLS required but %s does not advertise it — refusing plaintext delivery", mxHost)
+		return SendResult{State: StateDeferred, Message: "STARTTLS required but not offered by remote"},
+			fmt.Errorf("starttls required but %s does not offer it", mxHost)
+	}
+
+	// Apply DKIM (or other) signing just before the DATA phase so every
+	// outbound message is authenticated.
+	rawToSend := msg.RawRFC822
+	if s.Signer != nil {
+		signed, signErr := s.Signer.Sign(rawToSend)
+		if signErr != nil {
+			// Signing failure: do not silently send unsigned mail when a signer
+			// is configured.  Defer so the operator can fix key material.
+			s.logger().Printf("sending: DKIM signing failed for message %s: %v — deferring", msg.ID, signErr)
+			return SendResult{State: StateDeferred, Message: fmt.Sprintf("DKIM signing failed: %v", signErr)},
+				fmt.Errorf("dkim sign: %w", signErr)
+		}
+		rawToSend = signed
 	}
 
 	if err := c.Mail(msg.Sender); err != nil {
@@ -138,7 +210,7 @@ func (s *SMTPSender) deliverToMX(ctx context.Context, msg Message, mxHost string
 	if err != nil {
 		return classifyErr(err), nil
 	}
-	if _, err := wc.Write(msg.RawRFC822); err != nil {
+	if _, err := wc.Write(rawToSend); err != nil {
 		_ = wc.Close()
 		return SendResult{State: StateDeferred}, fmt.Errorf("write data: %w", err)
 	}

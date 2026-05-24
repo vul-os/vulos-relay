@@ -13,22 +13,39 @@ import (
 // defaultSkew is the timestamp acceptance window half-width (spec/PEERING.md §7).
 const defaultSkew = 5 * time.Minute
 
+// defaultMaxSeen bounds the dedup cache so a flood of distinct (sender,nonce)
+// pairs cannot grow memory without limit within the acceptance window.
+const defaultMaxSeen = 1 << 20 // ~1M entries
+
 // ReplayGuard enforces spec §7 replay protection: a timestamp acceptance window
 // plus per-(sender,nonce) dedup. It is safe for concurrent use.
+//
+// Dedup entries are grouped into one-second expiry buckets so eviction walks
+// only the handful of elapsed bucket-seconds per call (amortized O(1)) instead
+// of scanning the whole set, and total memory is bounded by MaxSeen.
 type ReplayGuard struct {
 	// Skew is the half-width of the timestamp acceptance window. Zero uses the
 	// default (5 minutes).
 	Skew time.Duration
 	// Now, if non-nil, overrides the clock (tests).
 	Now func() time.Time
+	// MaxSeen is a hard cap on retained dedup entries. Zero uses defaultMaxSeen.
+	MaxSeen int
 
-	mu   sync.Mutex
-	seen map[string]time.Time // key: sender||nonce -> first-seen timestamp
+	mu sync.Mutex
+	// seen maps key(sender||nonce) -> expiry-bucket second.
+	seen map[string]int64
+	// buckets groups keys by their expiry second for amortized eviction.
+	buckets   map[int64]map[string]struct{}
+	minBucket int64
 }
 
 // NewReplayGuard creates a ReplayGuard with the default skew.
 func NewReplayGuard() *ReplayGuard {
-	return &ReplayGuard{seen: make(map[string]time.Time)}
+	return &ReplayGuard{
+		seen:    make(map[string]int64),
+		buckets: make(map[int64]map[string]struct{}),
+	}
 }
 
 // Check accepts an envelope's (sender, nonce, timestamp) once. It returns
@@ -39,7 +56,10 @@ func (g *ReplayGuard) Check(senderID ed25519.PublicKey, nonce []byte, ts time.Ti
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.seen == nil {
-		g.seen = make(map[string]time.Time)
+		g.seen = make(map[string]int64)
+	}
+	if g.buckets == nil {
+		g.buckets = make(map[int64]map[string]struct{})
 	}
 
 	skew := g.Skew
@@ -57,26 +77,101 @@ func (g *ReplayGuard) Check(senderID ed25519.PublicKey, nonce []byte, ts time.Ti
 		return ErrReplay
 	}
 
-	// Opportunistically evict entries that have aged out of any window.
+	// Evict entries that have aged out of the acceptance window. Once aged out
+	// the timestamp check alone rejects any re-presentation (spec §7).
 	g.evict(cur, skew)
 
 	key := guardKey(senderID, nonce)
 	if _, dup := g.seen[key]; dup {
 		return ErrReplay
 	}
-	g.seen[key] = ts
+	// An accepted (sender,nonce) can only be replayed while its timestamp still
+	// falls inside [cur-skew, cur+skew]; the widest such window relative to the
+	// time of first acceptance is the future edge, so retain until cur+2*skew.
+	expiry := cur.Add(2 * skew).Unix()
+	g.insert(key, expiry)
 	return nil
 }
 
-// evict drops entries older than the acceptance window; once aged out the
-// timestamp check alone rejects any re-presentation (spec §7).
-func (g *ReplayGuard) evict(now time.Time, skew time.Duration) {
-	cutoff := now.Add(-skew)
-	for k, t := range g.seen {
-		if t.Before(cutoff) {
-			delete(g.seen, k)
+func (g *ReplayGuard) maxSeen() int {
+	if g.MaxSeen > 0 {
+		return g.MaxSeen
+	}
+	return defaultMaxSeen
+}
+
+// insert records key in the index and its expiry bucket, enforcing the size cap.
+func (g *ReplayGuard) insert(key string, bucket int64) {
+	g.seen[key] = bucket
+	b := g.buckets[bucket]
+	if b == nil {
+		b = make(map[string]struct{})
+		g.buckets[bucket] = b
+		if g.minBucket == 0 || bucket < g.minBucket {
+			g.minBucket = bucket
 		}
 	}
+	b[key] = struct{}{}
+
+	for len(g.seen) > g.maxSeen() && len(g.buckets) > 0 {
+		g.recomputeMinBucket()
+		g.dropBucket(g.minBucket)
+	}
+	if len(g.buckets) == 0 {
+		g.minBucket = 0
+	}
+}
+
+// evict drops entries whose expiry bucket has passed. Eviction walks only the
+// elapsed bucket-seconds rather than scanning the entire set.
+func (g *ReplayGuard) evict(now time.Time, _ time.Duration) {
+	if len(g.buckets) == 0 {
+		g.minBucket = 0
+		return
+	}
+	cutoff := now.Unix()
+	const maxProbe = 8
+	misses := 0
+	for g.minBucket > 0 && g.minBucket <= cutoff {
+		if _, ok := g.buckets[g.minBucket]; ok {
+			g.dropBucket(g.minBucket)
+			misses = 0
+		} else {
+			misses++
+		}
+		g.minBucket++
+		if len(g.buckets) == 0 {
+			g.minBucket = 0
+			return
+		}
+		if misses > maxProbe {
+			g.recomputeMinBucket()
+			misses = 0
+		}
+	}
+}
+
+// dropBucket removes an entire expiry bucket and all its keys.
+func (g *ReplayGuard) dropBucket(bucket int64) {
+	b, ok := g.buckets[bucket]
+	if !ok {
+		return
+	}
+	for k := range b {
+		delete(g.seen, k)
+	}
+	delete(g.buckets, bucket)
+}
+
+// recomputeMinBucket finds the lowest live bucket second.
+func (g *ReplayGuard) recomputeMinBucket() {
+	min := int64(0)
+	for sec := range g.buckets {
+		if min == 0 || sec < min {
+			min = sec
+		}
+	}
+	g.minBucket = min
 }
 
 func guardKey(senderID ed25519.PublicKey, nonce []byte) string {

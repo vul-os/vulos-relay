@@ -8,9 +8,13 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -370,3 +374,100 @@ func (s *MemKeyStore) Delete(selector string) error {
 }
 
 var _ KeyStore = (*MemKeyStore)(nil)
+
+// ---- FSKeyStore: filesystem reference implementation ------------------------
+
+// FSKeyStore persists DKIM keys as JSON files under a directory, one file per
+// selector.  It is the reference persistent KeyStore for self-hosted
+// deployments so signing keys survive restarts.
+type FSKeyStore struct {
+	dir string
+	mu  sync.Mutex
+}
+
+// NewFSKeyStore creates an FSKeyStore rooted at dir, creating the directory if
+// it does not exist.
+func NewFSKeyStore(dir string) (*FSKeyStore, error) {
+	if dir == "" {
+		return nil, errors.New("dkim: FSKeyStore requires a directory")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("dkim: create key dir %q: %w", dir, err)
+	}
+	return &FSKeyStore{dir: dir}, nil
+}
+
+func (s *FSKeyStore) path(selector string) string {
+	return filepath.Join(s.dir, selector+".json")
+}
+
+// Save implements KeyStore (atomic write via temp file + rename).
+func (s *FSKeyStore) Save(key DKIMKey) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	payload, err := json.Marshal(key)
+	if err != nil {
+		return fmt.Errorf("dkim: marshal key: %w", err)
+	}
+	final := s.path(key.Selector)
+	tmp := final + ".tmp"
+	if err := os.WriteFile(tmp, payload, 0o600); err != nil {
+		return fmt.Errorf("dkim: write key temp file: %w", err)
+	}
+	if err := os.Rename(tmp, final); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("dkim: commit key file: %w", err)
+	}
+	return nil
+}
+
+// Load implements KeyStore.
+func (s *FSKeyStore) Load(selector string) (DKIMKey, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	data, err := os.ReadFile(s.path(selector))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return DKIMKey{}, ErrKeyNotFound
+		}
+		return DKIMKey{}, fmt.Errorf("dkim: read key %q: %w", selector, err)
+	}
+	var key DKIMKey
+	if err := json.Unmarshal(data, &key); err != nil {
+		return DKIMKey{}, fmt.Errorf("dkim: unmarshal key %q: %w", selector, err)
+	}
+	return key, nil
+}
+
+// List implements KeyStore.
+func (s *FSKeyStore) List() ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return nil, fmt.Errorf("dkim: list key dir: %w", err)
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if strings.HasSuffix(name, ".json") {
+			out = append(out, strings.TrimSuffix(name, ".json"))
+		}
+	}
+	return out, nil
+}
+
+// Delete implements KeyStore.
+func (s *FSKeyStore) Delete(selector string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := os.Remove(s.path(selector)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("dkim: delete key %q: %w", selector, err)
+	}
+	return nil
+}
+
+var _ KeyStore = (*FSKeyStore)(nil)

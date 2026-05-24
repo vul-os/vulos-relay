@@ -6,6 +6,8 @@ package reputation_test
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/vul-os/vulos-relay/internal/reputation"
@@ -137,6 +139,76 @@ func TestCappedPolicyManualSuspend(t *testing.T) {
 	_, err := p.CheckSend(ctx, "d", reputation.Message{})
 	if !errors.Is(err, reputation.ErrSuspended) {
 		t.Fatalf("want ErrSuspended after manual suspend, got %v", err)
+	}
+}
+
+// TestCappedPolicyCapEnforcedAtGateUnderConcurrency proves the P1 fix: the
+// daily cap is reserved at the CheckSend gate (not at RecordResult), so many
+// concurrent workers cannot all pass the gate before any of them records a
+// result. The number of allowed sends must never exceed the cap.
+func TestCappedPolicyCapEnforcedAtGateUnderConcurrency(t *testing.T) {
+	const cap = 50
+	const workers = 500
+	p := newCapped(cap, 1.0, 1000) // high bounce threshold so it never suspends
+
+	var allowed int64
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			d, err := p.CheckSend(ctx, "acct", reputation.Message{})
+			if err == nil && d.Allow {
+				atomic.AddInt64(&allowed, 1)
+				// Simulate a successful (terminal) send so the reservation is kept.
+				_ = p.RecordResult(ctx, "acct", reputation.SendResult{State: reputation.SendDelivered})
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	got := atomic.LoadInt64(&allowed)
+	if got != cap {
+		t.Fatalf("cap enforcement under concurrency: allowed %d sends, want exactly %d", got, cap)
+	}
+
+	// The cap should now be reached: a further CheckSend must be rate-limited.
+	d, err := p.CheckSend(ctx, "acct", reputation.Message{})
+	if !errors.Is(err, reputation.ErrRateLimited) || d.Allow {
+		t.Fatalf("expected ErrRateLimited after cap reached, got allow=%v err=%v", d.Allow, err)
+	}
+}
+
+// TestCappedPolicyDeferReleasesReservation verifies that a transient (deferred)
+// outcome releases the gate-time reservation so the quota is not permanently
+// burned by a message that will be retried.
+func TestCappedPolicyDeferReleasesReservation(t *testing.T) {
+	p := newCapped(2, 1.0, 100)
+
+	// First attempt: gate reserves, then defers → slot released.
+	d, err := p.CheckSend(ctx, "acct", reputation.Message{})
+	if err != nil || !d.Allow {
+		t.Fatalf("first CheckSend: allow=%v err=%v", d.Allow, err)
+	}
+	_ = p.RecordResult(ctx, "acct", reputation.SendResult{State: reputation.SendDeferred})
+
+	// Two more delivered sends should still fit under the cap of 2 because the
+	// deferred one released its reservation.
+	for i := 0; i < 2; i++ {
+		d, err := p.CheckSend(ctx, "acct", reputation.Message{})
+		if err != nil || !d.Allow {
+			t.Fatalf("delivered CheckSend %d: allow=%v err=%v", i, d.Allow, err)
+		}
+		_ = p.RecordResult(ctx, "acct", reputation.SendResult{State: reputation.SendDelivered})
+	}
+
+	// Now the cap is consumed.
+	d, err = p.CheckSend(ctx, "acct", reputation.Message{})
+	if !errors.Is(err, reputation.ErrRateLimited) || d.Allow {
+		t.Fatalf("expected rate-limit after 2 delivered, got allow=%v err=%v", d.Allow, err)
 	}
 }
 
