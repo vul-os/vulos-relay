@@ -1,0 +1,96 @@
+{
+  "name": "@vulos/relay-client",
+  "private": false,
+  "version": "1.0.0",
+  "description": "JS client for the Vulos peer-fabric relay — endpoint failover, offline bootstrap, WebRTC signaling, presence, live cursors. The Go relay server lives in the parent repo (vulos-relay/relay/).",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "vite build --config vite.config.lib.js",
+    "test": "vitest run"
+  },
+  "main": "./dist-lib/index.cjs",
+  "module": "./dist-lib/index.js",
+  "exports": {
+    ".": {
+      "source": "./src/index.js",
+      "import": "./dist-lib/index.js",
+      "require": "./dist-lib/index.cjs",
+      "default": "./dist-lib/index.js"
+    },
+    "./endpoints": {
+      "source": "./src/endpoints.js",
+      "import": "./dist-lib/endpoints.js",
+      "require": "./dist-lib/endpoints.cjs",
+      "default": "./dist-lib/endpoints.js"
+    },
+    "./offlineBootstrap": {
+      "source": "./src/offlineBootstrap.js",
+      "import": "./dist-lib/offlineBootstrap.js",
+      "require": "./dist-lib/offlineBootstrap.cjs",
+      "default": "./dist-lib/offlineBootstrap.js"
+    },
+    "./signaling": {
+      "source": "./src/signaling.js",
+      "import": "./dist-lib/signaling.js",
+      "require": "./dist-lib/signaling.cjs",
+      "default": "./dist-lib/signaling.js"
+    },
+    "./fabric": {
+      "source": "./src/fabric.js",
+      "import": "./dist-lib/fabric.js",
+      "require": "./dist-lib/fabric.cjs",
+      "default": "./dist-lib/fabric.js"
+    },
+    "./presence": {
+      "source": "./src/presence.js",
+      "import": "./dist-lib/presence.js",
+      "require": "./dist-lib/presence.cjs",
+      "default": "./dist-lib/presence.js"
+    },
+    "./call": {
+      "source": "./src/call/index.js",
+      "import": "./dist-lib/call.js",
+      "require": "./dist-lib/call.cjs",
+      "default": "./dist-lib/call.js"
+    },
+    "./useLiveCursors": {
+      "source": "./src/useLiveCursors.js",
+      "import": "./dist-lib/useLiveCursors.js",
+      "require": "./dist-lib/useLiveCursors.cjs",
+      "default": "./dist-lib/useLiveCursors.js"
+    },
+    "./roundTripCheck": {
+      "source": "./src/roundTripCheck.js",
+      "import": "./dist-lib/roundTripCheck.js",
+      "require": "./dist-lib/roundTripCheck.cjs",
+      "default": "./dist-lib/roundTripCheck.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist-lib/",
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "livekit-client": "^2.0.0",
+    "react": "^18.0.0",
+    "xlsx": "^0.18.0"
+  },
+  "peerDependenciesMeta": {
+    "livekit-client": { "optional": true },
+    "react": { "optional": true },
+    "xlsx": { "optional": true }
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.4.1",
+    "jsdom": "^29.1.1",
+    "livekit-client": "^2.19.0",
+    "react": "^18.3.1",
+    "vite": "^6.3.5",
+    "vitest": "^4.1.7",
+    "xlsx": "^0.18.5"
+  }
+}

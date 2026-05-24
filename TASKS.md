@@ -292,3 +292,22 @@ byte-identical to LiveKit's own. Follow-ups (MEET-ROOMSVC-02, MEET-SIGNAL-GATE-0
 MEET-RECORDING-DRIVER-05, MEET-METRICS-06, MEET-UPSTREAM-MERGE-07) tracked in
 [vulos-meet/tasks.md](https://github.com/vul-os/vulos-meet/blob/main/tasks.md).
 AC: [x] new repo created at /Users/pc/code/exo/vulos-meet with MIT LICENSE + go.mod [x] LiveKit Server runs with Vulos token auth [x] per-tenant namespace [x] simulcast + top-N audio mix configured [x] admin endpoint [x] go build ./... && go vet ./... && go test ./...
+
+---
+
+## Area: Relay-client JS package (Wave C — 2026-05-24)
+
+### [RELAY-CLIENT-01] @vulos/relay-client JS package — de-dupe + promote fabric primitives
+`done` · P1 · L · dep: none · parallel: yes — vulos-relay/client/ (NEW JS subdir w/ package.json + vite-lib build)
+Scope: vulos-office is the de-facto home for the JS peer-fabric client (`src/lib/{signaling,fabric,presence,
+call,useLiveCursors,roundTripCheck}.js`); `endpoints.js` + `offlineBootstrap.js` are **triple-duplicated** across
+office + mail-webmail + vulos OS (~967 LOC total of duplication). Promote into a new MIT JS package
+`@vulos/relay-client` housed at `vulos-relay/client/` (mirrors how `@vulos/mail-client` lives at
+`vulos-mail/webmail-vulos/`, and `@vulos/office-client` lives at `vulos-office/` root). Subpath exports:
+`./endpoints`, `./offlineBootstrap`, `./signaling`, `./fabric`, `./presence`, `./call`, `./useLiveCursors`,
+`./roundTripCheck`. Canonical source: office's copies for signaling/fabric/presence/call/useLiveCursors
+(richest impls); for `endpoints.js` + `offlineBootstrap.js`, merge the three copies — vulos OS's 282-line
+`endpoints.js` is the most complete; mail's 237 and office's 235 are byte-near. Ship full vitest coverage
+(port from the three consumers). package.json `exports` + `files` arrays + vite-lib build producing dist-lib
+.js + .cjs per subpath. NO consumer changes in this task — those are RELAY-CLIENT-02/03/04 in their own repos.
+AC: [x] vulos-relay/client/package.json declares @vulos/relay-client + all 8 subpath exports [x] all 8 source modules present + unit-tested [x] vitest passes (≥6 failover + ≥3 SW-bootstrap + signaling/fabric integration) — 14 endpoints + 7 offlineBootstrap + 5 signaling = 26 green [x] vite-lib build produces dist-lib outputs ready for file: consumers [x] go build ./... still clean (no Go changes expected)
