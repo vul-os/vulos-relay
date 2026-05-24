@@ -340,3 +340,17 @@ license as our 4 OSS repos, self-hostable, supports cascading SFU for large room
 `spec/VERSIONS.md`. Tasks: `MEET-CORE-01` (this repo's entry point — the task creates the new repo); see
 sibling repos for cloud Pro-gate (`MEET-CP-01`), office UI (`MEET-SPACES-01`), OS wrapper (`MEET-OS-01`),
 transcription (`MEET-TRANSCRIPT-01`).
+
+---
+
+## Relay-client JS package (v7.2 — Wave C)
+
+vulos-office accumulated the JS peer-fabric client (`src/lib/{signaling,fabric,presence,call,useLiveCursors,
+roundTripCheck}.js`); `endpoints.js` + `offlineBootstrap.js` are **triple-duplicated** across office + mail-
+webmail + vulos OS (~1k LOC of duplication). Promote into a new MIT JS package `@vulos/relay-client` housed at
+`vulos-relay/client/` — sibling to the existing Go relay surfaces (peering / sync / streamsignal / repisolation).
+Future apps consume relay primitives from one place; the 3 current consumers migrate and delete their local
+copies. Wave-C task graph: `RELAY-CLIENT-01` (this repo, foundation) → `RELAY-CLIENT-02` (office migrate +
+`MEET-FRONTEND-POLISH-01`), `RELAY-CLIENT-03` (mail-webmail migrate), `RELAY-CLIENT-04` (vulos OS migrate) all
+parallel after the foundation lands. Final step: `#125` verification wave across all 6 sibling repos
+(vulos, vulos-mail, vulos-relay, vulos-office, vulos-cloud, vulos-meet).
