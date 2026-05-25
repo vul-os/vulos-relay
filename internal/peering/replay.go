@@ -100,6 +100,17 @@ func (g *ReplayGuard) maxSeen() int {
 	return defaultMaxSeen
 }
 
+// SeenLen reports the number of dedup entries currently retained. It exists so
+// callers (and the security/pentest suite) can assert the cache stays bounded
+// under a distinct-nonce flood — the MaxSeen cap holds regardless of how many
+// distinct (sender,nonce) pairs are presented within the acceptance window. It
+// does not affect the wire protocol.
+func (g *ReplayGuard) SeenLen() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return len(g.seen)
+}
+
 // insert records key in the index and its expiry bucket, enforcing the size cap.
 func (g *ReplayGuard) insert(key string, bucket int64) {
 	g.seen[key] = bucket
