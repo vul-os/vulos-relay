@@ -259,7 +259,7 @@ func TestSubmit_DisabledViaEnv_NoListenerBound(t *testing.T) {
 	router := relay.NewRouter(relay.RouterConfig{})
 	q := queue.NewMemQueue()
 
-	srv, err := startSubmitListener(cfg, auth, router, q)
+	srv, err := startSubmitListener(cfg, auth, router, q, nil)
 	if err != nil {
 		t.Fatalf("startSubmitListener: %v", err)
 	}
@@ -298,7 +298,7 @@ func TestSubmit_EnabledViaConfig_TCPListenerRefusesUnauth(t *testing.T) {
 	router := relay.NewRouter(relay.RouterConfig{})
 	q := queue.NewMemQueue()
 
-	srv, err := startSubmitListener(cfg, auth, router, q)
+	srv, err := startSubmitListener(cfg, auth, router, q, nil)
 	if err != nil {
 		t.Fatalf("startSubmitListener: %v", err)
 	}

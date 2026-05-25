@@ -9,6 +9,8 @@ package main
 
 import (
 	"context"
+	"crypto/ecdh"
+	"crypto/ed25519"
 	"errors"
 	"flag"
 	"fmt"
@@ -17,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -63,6 +66,19 @@ type config struct {
 	// Peering resolver static config path.
 	// RELAY_PEER_CONFIG: path to a peering config file (empty = no static peers)
 	PeerConfig string
+
+	// Vulos↔Vulos peering transport.
+	// RELAY_PEERING_ENABLE: when set, use the real HTTPS peer-delivery transport
+	// (and bind the peering ingress endpoint) instead of the in-memory loopback.
+	PeeringEnable bool
+	// RELAY_PEERING_DOMAINS: comma-separated list of mail domains THIS relay is
+	// authoritative for (used for §8.3 receiver-targeting and as the sender
+	// domain authority on the receive side). Required when peering is enabled.
+	PeeringDomains string
+	// RELAY_PEERING_KEY_DIR: directory to persist this node's long-term peer
+	// identity keypair (Ed25519 + X25519). Empty = ephemeral (generated each
+	// start; remote pins break on restart — not suitable for production).
+	PeeringKeyDir string
 
 	// Pipeline tuning.
 	// RELAY_WORKERS: number of concurrent delivery goroutines (default: 4)
@@ -152,6 +168,9 @@ func parseConfig() config {
 		SMTPLocalIP:           envString("RELAY_SMTP_LOCAL_IP", ""),
 		SMTPHelo:              envString("RELAY_SMTP_HELO", ""),
 		PeerConfig:            envString("RELAY_PEER_CONFIG", ""),
+		PeeringEnable:         envBool("RELAY_PEERING_ENABLE", false),
+		PeeringDomains:        envString("RELAY_PEERING_DOMAINS", ""),
+		PeeringKeyDir:         envString("RELAY_PEERING_KEY_DIR", ""),
 		Workers:               envInt("RELAY_WORKERS", 4),
 		SubmitAddr:            envString("RELAY_SUBMIT_ADDR", ":8025"),
 		SubmitDisabled:        envBool("RELAY_SUBMIT_DISABLE", false),
@@ -308,6 +327,23 @@ func (a *queueEnqueuerAdapter) Depth(_ context.Context) int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.approxN
+}
+
+// routerSink adapts relay.Router.RouteInbound to the peering.DeliverySink seam:
+// a successfully-opened, fully-authenticated peer envelope is injected into the
+// local mailbox/spool. This is the cross-process local-delivery path that
+// replaces the loopback's in-memory delivered log.
+type routerSink struct{ router *relay.Router }
+
+func newRouterSink(r *relay.Router) *routerSink { return &routerSink{router: r} }
+
+func (s *routerSink) Deliver(ctx context.Context, mailFrom string, rcptTo []string, raw []byte) error {
+	return s.router.RouteInbound(ctx, relay.InboundEnvelope{
+		From:         mailFrom,
+		To:           rcptTo,
+		RawRFC822:    raw,
+		PeerEndpoint: "vulos-peer",
+	})
 }
 
 // buildSMTPSender constructs an SMTPSender with optional source binding, DKIM
@@ -491,16 +527,107 @@ func buildPoolSender(ctx context.Context, cfg config, inner sending.Sender) send
 	return ps
 }
 
-// buildResolver constructs a peering resolver.  If PeerConfig is set, it is
-// reserved for a future file-based peer loader; for now we always return an
-// empty StaticResolver (no static peers configured at startup means all mail
-// goes via SMTP).
-func buildResolver(cfg config) *peering.StaticResolver {
+// buildResolver constructs a peering resolver, loading the operator peer table
+// from RELAY_PEER_CONFIG when set (spec §3.1 source 1 — the local peer
+// registry). A domain present in the registry is a peer; everything else falls
+// back to SMTP. Key pinning (spec §3.2) is enforced on load.
+func buildResolver(cfg config) (*peering.StaticResolver, error) {
 	r := peering.NewStaticResolver()
-	if cfg.PeerConfig != "" {
-		log.Printf("relay: peer config path %q (static peer loading not yet implemented, SMTP-only mode)", cfg.PeerConfig)
+	if cfg.PeerConfig == "" {
+		log.Printf("relay: no RELAY_PEER_CONFIG set — no static peers; all mail goes via SMTP")
+		return r, nil
 	}
-	return r
+	n, err := peering.LoadPeersFile(r, cfg.PeerConfig)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("relay: loaded %d peer(s) from %s", n, cfg.PeerConfig)
+	return r, nil
+}
+
+// loadOrCreatePeerIdentity loads this node's long-term peer identity from
+// keyDir, generating and persisting a fresh one if none exists. An empty keyDir
+// yields an ephemeral identity (regenerated each start) — usable for tests and
+// loopback but NOT for production, since remote peers pin our key.
+//
+// The keypair is stored as two base64url files: identity.ed25519 (64-byte
+// private seed||pub form from crypto/ed25519) and kex.x25519 (32-byte private).
+func loadOrCreatePeerIdentity(keyDir string) (*peering.Identity, error) {
+	if keyDir == "" {
+		return peering.GenerateIdentity()
+	}
+	if err := os.MkdirAll(keyDir, 0o700); err != nil {
+		return nil, fmt.Errorf("peer key dir: %w", err)
+	}
+	edPath := filepath.Join(keyDir, "identity.ed25519")
+	kexPath := filepath.Join(keyDir, "kex.x25519")
+
+	edRaw, edErr := os.ReadFile(edPath)
+	kexRaw, kexErr := os.ReadFile(kexPath)
+	if edErr == nil && kexErr == nil {
+		signPriv, err := decodeKeyFile(edRaw)
+		if err != nil {
+			return nil, fmt.Errorf("peer identity key: %w", err)
+		}
+		kexPriv, err := decodeKeyFile(kexRaw)
+		if err != nil {
+			return nil, fmt.Errorf("peer kex key: %w", err)
+		}
+		if len(signPriv) != ed25519.PrivateKeySize {
+			return nil, fmt.Errorf("peer identity key wrong length %d", len(signPriv))
+		}
+		ed := ed25519.PrivateKey(signPriv)
+		x, err := ecdh.X25519().NewPrivateKey(kexPriv)
+		if err != nil {
+			return nil, fmt.Errorf("peer kex key: %w", err)
+		}
+		log.Printf("relay: loaded persisted peer identity from %s", keyDir)
+		return &peering.Identity{
+			SignPub:  ed.Public().(ed25519.PublicKey),
+			SignPriv: ed,
+			KexPub:   x.PublicKey().Bytes(),
+			KexPriv:  x,
+		}, nil
+	}
+
+	// Generate and persist a fresh identity.
+	id, err := peering.GenerateIdentity()
+	if err != nil {
+		return nil, err
+	}
+	if err := writeKeyFile(edPath, id.SignPriv); err != nil {
+		return nil, err
+	}
+	if err := writeKeyFile(kexPath, id.KexPriv.Bytes()); err != nil {
+		return nil, err
+	}
+	log.Printf("relay: generated and persisted new peer identity in %s (identity_pub=%s)",
+		keyDir, peering.EncodeKey(id.SignPub))
+	return id, nil
+}
+
+func decodeKeyFile(b []byte) ([]byte, error) {
+	return peering.DecodeKey(strings.TrimSpace(string(b)))
+}
+
+func writeKeyFile(path string, raw []byte) error {
+	enc := peering.EncodeKey(raw)
+	if err := os.WriteFile(path, []byte(enc), 0o600); err != nil {
+		return fmt.Errorf("write peer key %q: %w", path, err)
+	}
+	return nil
+}
+
+// parseDomainList splits a comma-separated domain list into a lowercased set.
+func parseDomainSet(s string) map[string]bool {
+	set := map[string]bool{}
+	for _, d := range strings.Split(s, ",") {
+		d = strings.ToLower(strings.TrimSpace(d))
+		if d != "" {
+			set[d] = true
+		}
+	}
+	return set
 }
 
 func main() {
@@ -520,7 +647,10 @@ Environment variables:
   RELAY_POLICY_WINDOW_SIZE     CappedPolicy: rolling window size (default: 100)
   RELAY_SMTP_LOCAL_IP          Outbound SMTP source IP (default: OS routing)
   RELAY_SMTP_HELO              SMTP EHLO/HELO hostname (default: system hostname)
-  RELAY_PEER_CONFIG            Path to static peer config (default: none)
+  RELAY_PEER_CONFIG            Path to static peer config JSON (default: none)
+  RELAY_PEERING_ENABLE         Enable the real HTTPS Vulos↔Vulos peering transport + ingress (1/true)
+  RELAY_PEERING_DOMAINS        Comma-list of mail domains THIS relay is authoritative for (peering)
+  RELAY_PEERING_KEY_DIR        Directory to persist this node's peer identity keypair (default: ephemeral)
   RELAY_WORKERS                Concurrent delivery workers (default: 4)
   RELAY_SUBMIT_ADDR            HTTP submission listener address (default: ":8025")
   RELAY_SUBMIT_DISABLE         Set to 1 to skip binding the submission listener
@@ -580,13 +710,28 @@ Environment variables:
 	// unchanged.
 	smtpEgress := buildPoolSender(ctx, cfg, smtpSender)
 
-	// Build peering resolver and peer sender.
-	resolver := buildResolver(cfg)
-	peerIdentity, err := peering.GenerateIdentity()
+	// Build peering resolver (operator peer table) and this node's identity.
+	resolver, err := buildResolver(cfg)
 	if err != nil {
-		log.Fatalf("relay: generate peer identity: %v", err)
+		log.Fatalf("relay: peer resolver: %v", err)
 	}
-	transport := peering.NewLoopbackTransport()
+	peerIdentity, err := loadOrCreatePeerIdentity(cfg.PeeringKeyDir)
+	if err != nil {
+		log.Fatalf("relay: peer identity: %v", err)
+	}
+
+	// Select the peer transport. When peering is enabled, use the real,
+	// cross-process HTTPS peer-delivery transport (spec §2); otherwise keep the
+	// in-memory loopback (tests / single-process standalone). The peer path is
+	// end-to-end encrypted and bypasses public SMTP regardless of transport.
+	var transport peering.PeerTransport
+	if cfg.PeeringEnable {
+		transport = peering.NewHTTPTransport()
+		log.Printf("relay: Vulos↔Vulos peering ENABLED (HTTPS peer-delivery transport)")
+	} else {
+		transport = peering.NewLoopbackTransport()
+		log.Printf("relay: peering transport: in-memory loopback (set RELAY_PEERING_ENABLE for cross-process peering)")
+	}
 	peerSender := peering.NewPeerSender(peerIdentity, resolver, transport)
 
 	// Wire RoutingSender: peer path wraps SMTP path.
@@ -596,14 +741,41 @@ Environment variables:
 		Resolver: resolver,
 	}
 
+	// Build the receiving-peer side (ingress). The Receiver opens inbound
+	// envelopes through the full §7–§8 checks and hands plaintext to the local
+	// delivery path (Router.RouteInbound). Mounted onto the HTTP surface below.
+	var peerReceiver *peering.Receiver
+	if cfg.PeeringEnable {
+		authoritative := parseDomainSet(cfg.PeeringDomains)
+		if len(authoritative) == 0 {
+			log.Fatalf("relay: RELAY_PEERING_ENABLE set but RELAY_PEERING_DOMAINS is empty — refusing to start an ingress that is authoritative for no domain")
+		}
+		peerReceiver = &peering.Receiver{
+			Identity:   peerIdentity,
+			Authorized: func(d string) bool { return authoritative[strings.ToLower(d)] },
+			PinnedKey:  resolver.PinnedKey,
+			Guard:      peering.NewReplayGuard(),
+			Resolver:   resolver,
+			Sink:       newRouterSink(router),
+		}
+		domList := make([]string, 0, len(authoritative))
+		for d := range authoritative {
+			domList = append(domList, d)
+		}
+		log.Printf("relay: peering ingress authoritative for domains %v (identity_pub=%s)",
+			domList, peering.EncodeKey(peerIdentity.SignPub))
+	}
+
 	// Build and start pipeline.
 	pipelineCfg := sending.PipelineConfig{
 		Workers: cfg.Workers,
 	}
 	pipeline := sending.NewPipeline(q, policy, routingSender, pipelineCfg)
 
-	// Start the submission listener alongside the outbound pipeline.
-	srv, srvErr := startSubmitListener(cfg, auth, router, q)
+	// Start the submission listener alongside the outbound pipeline. When
+	// peering is enabled, the same HTTP surface also serves the peering ingress
+	// endpoint (authenticated, encrypted; no open injection).
+	srv, srvErr := startSubmitListener(cfg, auth, router, q, peerReceiver)
 	if srvErr != nil {
 		log.Fatalf("relay: submit listener: %v", srvErr)
 	}
@@ -631,12 +803,13 @@ Environment variables:
 	log.Println("relay: pipeline drained, exiting")
 }
 
-// startSubmitListener wires the submission HTTP endpoint and starts it on a
-// background goroutine. When SubmitDisabled is true it logs a warning and
-// returns (nil, nil) — the caller treats that as "no listener, queue-only
-// mode."
-func startSubmitListener(cfg config, auth relay.SubmitAuthenticator, router *relay.Router, q queue.Queue) (*http.Server, error) {
-	if cfg.SubmitDisabled {
+// startSubmitListener wires the submission HTTP endpoint (and, when configured,
+// the peering ingress endpoint) and starts it on a background goroutine. When
+// the submission listener is disabled AND there is no peering ingress to serve,
+// it logs a warning and returns (nil, nil) — the caller treats that as "no
+// listener, queue-only mode."
+func startSubmitListener(cfg config, auth relay.SubmitAuthenticator, router *relay.Router, q queue.Queue, peerReceiver *peering.Receiver) (*http.Server, error) {
+	if cfg.SubmitDisabled && peerReceiver == nil {
 		log.Printf("relay: WARNING — RELAY_SUBMIT_DISABLE is set; submission listener will not bind. " +
 			"The relay will only drain the queue. Open-relay prevention is enforced for any submission that " +
 			"reaches this binary via the HTTP path; in queue-only mode the operator is responsible for ensuring " +
@@ -644,21 +817,31 @@ func startSubmitListener(cfg config, auth relay.SubmitAuthenticator, router *rel
 		return nil, nil
 	}
 
-	enq, err := newQueueEnqueuerAdapter(q)
-	if err != nil {
-		return nil, err
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", obs.Handler())
+
+	// Submission endpoint, unless explicitly disabled.
+	if !cfg.SubmitDisabled {
+		enq, err := newQueueEnqueuerAdapter(q)
+		if err != nil {
+			return nil, err
+		}
+		h := relay.NewSubmitHandler(relay.SubmitHandlerConfig{
+			Authenticator: auth,
+			Router:        router,
+			Queue:         enq,
+			MaxBodyBytes:  int64(cfg.SubmitMaxBytes),
+		})
+		mux.Handle("/submit", h)
+	} else {
+		log.Printf("relay: RELAY_SUBMIT_DISABLE is set; only the peering ingress endpoint will bind")
 	}
 
-	h := relay.NewSubmitHandler(relay.SubmitHandlerConfig{
-		Authenticator: auth,
-		Router:        router,
-		Queue:         enq,
-		MaxBodyBytes:  int64(cfg.SubmitMaxBytes),
-	})
-
-	mux := http.NewServeMux()
-	mux.Handle("/submit", h)
-	mux.Handle("/metrics", obs.Handler())
+	// Peering ingress endpoint (authenticated, encrypted; no open injection).
+	if peerReceiver != nil {
+		mux.Handle(peering.PeeringPath, peering.IngressHandler(peerReceiver))
+		log.Printf("relay: peering ingress bound (POST %s)", peering.PeeringPath)
+	}
 
 	srv := &http.Server{
 		Addr:              cfg.SubmitAddr,
