@@ -70,6 +70,7 @@ const (
 	codePayloadTooLarge  errorCode = "payload_too_large"
 	codeInternal         errorCode = "internal_error"
 	codeMethodNotAllowed errorCode = "method_not_allowed"
+	codeRateLimited      errorCode = "rate_limited"
 )
 
 type errorBody struct {
@@ -102,6 +103,18 @@ type SubmitHandlerConfig struct {
 	// (16 MiB).
 	MaxBodyBytes int64
 
+	// PerIPLimit caps the number of submission requests a single client IP may
+	// make per PerIPWindow, enforced BEFORE authentication so an unauthenticated
+	// flood from one source cannot exhaust the relay. 0 = use the default
+	// (120/min). A negative value disables per-IP limiting.
+	PerIPLimit int
+
+	// PerIPWindow is the rate-limit window for PerIPLimit. 0 = 1 minute.
+	PerIPWindow time.Duration
+
+	// Observer, if non-nil, receives per-IP submission outcomes for metrics.
+	Observer SubmitObserver
+
 	// Now is overridable for tests; defaults to time.Now.
 	Now func() time.Time
 
@@ -110,9 +123,18 @@ type SubmitHandlerConfig struct {
 	IDGen func() string
 }
 
+// SubmitObserver receives per-IP submission outcomes so an external metrics
+// layer can record them. Methods must be non-blocking and concurrency-safe.
+type SubmitObserver interface {
+	// Submission reports a submission attempt from ip with the given outcome
+	// ("accepted", "rejected", or "rate_limited").
+	Submission(ip, outcome string)
+}
+
 // SubmitHandler is the http.Handler for POST /submit.
 type SubmitHandler struct {
-	cfg SubmitHandlerConfig
+	cfg     SubmitHandlerConfig
+	limiter *ipRateLimiter
 }
 
 // NewSubmitHandler returns a SubmitHandler. It panics if any of the required
@@ -137,7 +159,22 @@ func NewSubmitHandler(cfg SubmitHandlerConfig) *SubmitHandler {
 	if cfg.IDGen == nil {
 		cfg.IDGen = defaultIDGen
 	}
-	return &SubmitHandler{cfg: cfg}
+
+	// Per-IP rate limiter. 0 → secure default of 120/min; negative → disabled.
+	limit := cfg.PerIPLimit
+	if limit == 0 {
+		limit = 120
+	}
+	window := cfg.PerIPWindow
+	if window <= 0 {
+		window = time.Minute
+	}
+	h := &SubmitHandler{cfg: cfg}
+	if limit > 0 {
+		h.limiter = newIPRateLimiter(limit, window)
+		h.limiter.now = cfg.Now
+	}
+	return h
 }
 
 // ServeHTTP implements http.Handler. Only POST /submit is accepted; every
@@ -152,9 +189,20 @@ func (h *SubmitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 0. Per-IP rate cap — enforced BEFORE authentication so an unauthenticated
+	// flood from a single source cannot exhaust the relay or the auth path.
+	ip := clientIP(r)
+	if h.limiter != nil && !h.limiter.Allow(ip) {
+		h.observe(ip, "rate_limited")
+		w.Header().Set("Retry-After", "60")
+		writeError(w, http.StatusTooManyRequests, codeRateLimited, "per-IP submission rate limit exceeded")
+		return
+	}
+
 	// 1. Extract credentials.
 	creds, err := extractCredentials(r)
 	if err != nil {
+		h.observe(ip, "rejected")
 		writeError(w, http.StatusUnauthorized, codeUnauthenticated, err.Error())
 		return
 	}
@@ -163,6 +211,7 @@ func (h *SubmitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	accountID, authErr := h.cfg.Authenticator.Authenticate(ctx, creds)
 	if authErr != nil {
+		h.observe(ip, "rejected")
 		status, code := classifyAuthError(authErr)
 		writeError(w, status, code, authErr.Error())
 		return
@@ -220,6 +269,7 @@ func (h *SubmitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 6. 202 Accepted.
+	h.observe(ip, "accepted")
 	resp := acceptedBody{
 		MessageID:     msgID,
 		AccountID:     accountID,
@@ -228,6 +278,13 @@ func (h *SubmitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// observe notifies the configured SubmitObserver, if any.
+func (h *SubmitHandler) observe(ip, outcome string) {
+	if h.cfg.Observer != nil {
+		h.cfg.Observer.Submission(ip, outcome)
+	}
 }
 
 // ─── Credential extraction ────────────────────────────────────────────────────

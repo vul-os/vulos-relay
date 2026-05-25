@@ -32,6 +32,11 @@ type accountState struct {
 	results    []bool
 	resultHead int
 
+	// cleanDelivered is the lifetime count of delivered messages (used to
+	// derive the account's trust tier for warm-IP gating). It is not reset at
+	// the day boundary — trust accrues over the account's history.
+	cleanDelivered int
+
 	// Explicit suspension reason (set by Suspend).
 	suspendReason string
 }
@@ -55,6 +60,11 @@ type CappedPolicy struct {
 	// WindowSize is the number of recent results used to compute the rolling
 	// bounce rate.  Default: 100.
 	WindowSize int
+
+	// EstablishedThreshold is the lifetime clean-delivery count at or above
+	// which an account is promoted to AccountTrustEstablished (warm-IP
+	// eligible). 0 → use the package default (200).
+	EstablishedThreshold int
 
 	accounts map[string]*accountState
 }
@@ -168,6 +178,11 @@ func (p *CappedPolicy) RecordResult(_ context.Context, accountID string, result 
 		a.sentToday++
 	}
 
+	// Accrue trust on a clean delivery (lifetime; not reset daily).
+	if result.State == SendDelivered {
+		a.cleanDelivered++
+	}
+
 	// Record in the rolling window.
 	isBad := result.State == SendBounced || result.State == SendComplaint
 	ws := p.windowSize()
@@ -196,6 +211,98 @@ func (p *CappedPolicy) RecordResult(_ context.Context, accountID string, result 
 	}
 
 	return nil
+}
+
+// AccountTrust classifies an account's trust/reputation tier as observed by
+// CappedPolicy. It is the read side of the trust-gating that the warm-IP pool
+// depends on: a new or suspended account is cold, an account that has begun
+// sending cleanly is warming, and an account with enough clean volume is
+// established. The numeric values match sending.TrustTier so the cmd wiring
+// can map across the package boundary without an import cycle.
+type AccountTrust int
+
+const (
+	// AccountTrustNew is a freshly-seen or suspended account.
+	AccountTrustNew AccountTrust = iota
+	// AccountTrustUntrusted is an account warming up (some clean volume).
+	AccountTrustUntrusted
+	// AccountTrustEstablished is an account with enough clean send history.
+	AccountTrustEstablished
+)
+
+// EstablishedThreshold is the lifetime clean-delivery count at or above which
+// an account is promoted to AccountTrustEstablished. Below it (but above zero)
+// the account is AccountTrustUntrusted; with no history it is AccountTrustNew.
+// A suspended account is always AccountTrustNew regardless of history.
+//
+// Default (0) uses establishedThresholdDefault.
+var establishedThresholdDefault = 200
+
+// EstablishedThreshold overrides the promotion threshold. 0 = use the default.
+func (p *CappedPolicy) establishedThreshold() int {
+	if p.EstablishedThreshold > 0 {
+		return p.EstablishedThreshold
+	}
+	return establishedThresholdDefault
+}
+
+// TrustTierFor returns the current trust tier for accountID based on its
+// observed delivery history. Unknown accounts and suspended accounts fail
+// closed to AccountTrustNew (the coldest tier) so an untrusted sender is never
+// promoted to warm IPs.
+//
+// Classification:
+//   - suspended OR no clean deliveries          → AccountTrustNew
+//   - clean deliveries below establishedThreshold → AccountTrustUntrusted
+//   - clean deliveries ≥ establishedThreshold    → AccountTrustEstablished
+//
+// A non-trivial recent bounce/complaint rate demotes the account one tier so a
+// degrading sender is pulled back toward the ramp segment.
+func (p *CappedPolicy) TrustTierFor(accountID string) AccountTrust {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	a, ok := p.accounts[accountID]
+	if !ok {
+		return AccountTrustNew
+	}
+	if a.suspended {
+		return AccountTrustNew
+	}
+
+	tier := AccountTrustNew
+	switch {
+	case a.cleanDelivered >= p.establishedThreshold():
+		tier = AccountTrustEstablished
+	case a.cleanDelivered > 0:
+		tier = AccountTrustUntrusted
+	}
+
+	// Demote one tier when the recent bounce/complaint rate is elevated (but
+	// not yet suspension-worthy). This keeps a degrading sender off warm IPs.
+	if tier > AccountTrustNew && p.recentBadRateLocked(a) > p.bounceThreshold()/2 {
+		tier--
+	}
+	return tier
+}
+
+// recentBadRateLocked computes the rolling bounce/complaint rate. Caller holds p.mu.
+func (p *CappedPolicy) recentBadRateLocked(a *accountState) float64 {
+	ws := p.windowSize()
+	filled := a.resultHead
+	if filled > ws {
+		filled = ws
+	}
+	if filled == 0 {
+		return 0
+	}
+	bad := 0
+	for i := 0; i < filled; i++ {
+		if a.results[i] {
+			bad++
+		}
+	}
+	return float64(bad) / float64(filled)
 }
 
 // Suspend immediately suspends accountID with the given reason.

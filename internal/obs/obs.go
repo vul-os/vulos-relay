@@ -48,12 +48,87 @@ var (
 		Help:      "DNS/reputation cache hit ratio (0–1).",
 	})
 
+	// ── Security / deliverability counters & gauges ────────────────────────────
+
+	// QuarantineEvents counts blocklist quarantine actions (an IP pulled from
+	// rotation). Labelled by source (e.g. spamhaus, sorbs).
+	QuarantineEvents = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "vulos_relay",
+		Name:      "quarantine_events_total",
+		Help:      "Total warm-IP quarantine events (IP pulled from rotation by the blocklist monitor).",
+	}, []string{"source"})
+
+	// RampStep is the current warm-up ramp step index (0–4) per source IP.
+	RampStep = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "vulos_relay",
+		Name:      "ramp_step",
+		Help:      "Current warm-up ramp step index (0=50/day … 4=2500/day) per source IP.",
+	}, []string{"ip"})
+
+	// SubmitPerIP counts accepted/refused submissions per client IP.
+	SubmitPerIP = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "vulos_relay",
+		Name:      "submit_total",
+		Help:      "Total submission attempts at the submit gate, labelled by client IP and outcome.",
+	}, []string{"ip", "outcome"})
+
+	// SuppressionHits counts send-gate drops due to the suppression list.
+	SuppressionHits = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "vulos_relay",
+		Name:      "suppression_hits_total",
+		Help:      "Total recipients dropped at the send gate because they are on the suppression list, by reason.",
+	}, []string{"reason"})
+
+	// SuppressionAdds counts additions to the suppression list from DSN/ARF reports.
+	SuppressionAdds = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "vulos_relay",
+		Name:      "suppression_adds_total",
+		Help:      "Total addresses added to the suppression list from DSN/ARF reports, by reason.",
+	}, []string{"reason"})
+
+	// DKIMSignCount counts messages DKIM-signed on the outbound path.
+	DKIMSignCount = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "vulos_relay",
+		Name:      "dkim_sign_total",
+		Help:      "Total outbound messages DKIM-signed.",
+	})
+
+	// PeeringEvents counts Vulos↔Vulos peer ingress outcomes (deliver/reject).
+	PeeringEvents = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "vulos_relay",
+		Name:      "peering_events_total",
+		Help:      "Total peering ingress events by outcome (deliver|reject).",
+	}, []string{"outcome"})
+
+	// MTASTSEvents counts MTA-STS enforcement actions (enforced/deferred).
+	MTASTSEvents = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "vulos_relay",
+		Name:      "mtasts_events_total",
+		Help:      "Total MTA-STS enforcement events by outcome (enforced|deferred).",
+	}, []string{"outcome"})
+
+	// PoolSegmentSelections counts per-account pool segment selections.
+	PoolSegmentSelections = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "vulos_relay",
+		Name:      "pool_segment_selections_total",
+		Help:      "Total warm-IP pool segment selections by segment.",
+	}, []string{"segment"})
+
+	// PoolDeferrals counts pool-layer deferrals (no IP / ramp cap).
+	PoolDeferrals = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "vulos_relay",
+		Name:      "pool_deferrals_total",
+		Help:      "Total warm-IP pool deferrals by reason (no_available_ip|ramp_cap).",
+	}, []string{"reason"})
+
 	tracer trace.Tracer = noop.NewTracerProvider().Tracer(serviceName)
 )
 
 func Init() {
 	for _, c := range []prometheus.Collector{
 		RequestCount, RequestDuration, ErrorCount, QueueDepth, CacheHitRatio,
+		QuarantineEvents, RampStep, SubmitPerIP, SuppressionHits, SuppressionAdds,
+		DKIMSignCount, PeeringEvents, MTASTSEvents, PoolSegmentSelections, PoolDeferrals,
 	} {
 		_ = prometheus.DefaultRegisterer.Register(c)
 	}

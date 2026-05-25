@@ -293,6 +293,114 @@ func TestPipelineSuspendedDeadLetters(t *testing.T) {
 	}
 }
 
+// stubSuppression is a SuppressionChecker that drops a fixed set of addresses.
+type stubSuppression struct{ suppressed map[string]bool }
+
+func (s stubSuppression) FilterRecipients(rcpts []string) (allowed, dropped []string) {
+	for _, r := range rcpts {
+		if s.suppressed[r] {
+			dropped = append(dropped, r)
+		} else {
+			allowed = append(allowed, r)
+		}
+	}
+	return allowed, dropped
+}
+
+// TestPipelineSuppressedRecipientBlocked proves the send-gate suppression
+// check: a message whose only recipient is suppressed (e.g. it hard-bounced)
+// is acked WITHOUT being passed to the sender — the relay never re-sends to it.
+func TestPipelineSuppressedRecipientBlocked(t *testing.T) {
+	q := queue.NewMemQueue()
+	q.Enqueue(queue.OutboundMessage{
+		ID:            "sup1",
+		AccountID:     "acct1",
+		Sender:        "sender@example.com",
+		Recipients:    []string{"deadbox@example.com"},
+		RawRFC822:     []byte("Subject: t\r\n\r\nx"),
+		NextAttemptAt: time.Now().Add(-time.Second),
+	})
+
+	sender := &stubSender{}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	cfg := sending.PipelineConfig{
+		Workers:      1,
+		LeaseCount:   1,
+		RetryBackoff: time.Hour,
+		PollInterval: 20 * time.Millisecond,
+		Suppression:  stubSuppression{suppressed: map[string]bool{"deadbox@example.com": true}},
+	}
+	p := sending.NewPipeline(q, reputation.Permissive{}, sender, cfg)
+
+	go func() {
+		time.Sleep(250 * time.Millisecond)
+		cancel()
+	}()
+	p.Run(ctx)
+
+	if sender.calls != 0 {
+		t.Errorf("suppressed-only message must NOT reach the sender; got %d calls", sender.calls)
+	}
+	// And the message must be acked (gone), not stuck in the queue.
+	if msgs, err := q.Lease(context.Background(), 10); err != queue.ErrEmpty {
+		t.Errorf("suppressed-only message should be acked/removed, but %d still queued (err=%v)", len(msgs), err)
+	}
+}
+
+// TestPipelinePartialSuppressionDelivers proves that when only some recipients
+// are suppressed, the message is still delivered to the survivors.
+func TestPipelinePartialSuppressionDelivers(t *testing.T) {
+	q := queue.NewMemQueue()
+	q.Enqueue(queue.OutboundMessage{
+		ID:            "sup2",
+		AccountID:     "acct1",
+		Sender:        "sender@example.com",
+		Recipients:    []string{"good@example.org", "bad@example.com"},
+		RawRFC822:     []byte("Subject: t\r\n\r\nx"),
+		NextAttemptAt: time.Now().Add(-time.Second),
+	})
+
+	var got []string
+	sender := &recipientRecordingSender{}
+	cfg := sending.PipelineConfig{
+		Workers:      1,
+		LeaseCount:   1,
+		RetryBackoff: time.Hour,
+		PollInterval: 20 * time.Millisecond,
+		Suppression:  stubSuppression{suppressed: map[string]bool{"bad@example.com": true}},
+	}
+	p := sending.NewPipeline(q, reputation.Permissive{}, sender, cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go func() { time.Sleep(250 * time.Millisecond); cancel() }()
+	p.Run(ctx)
+
+	got = sender.lastRecipients()
+	if len(got) != 1 || got[0] != "good@example.org" {
+		t.Errorf("delivery should target only the non-suppressed recipient, got %v", got)
+	}
+}
+
+type recipientRecordingSender struct {
+	mu   sync.Mutex
+	last []string
+}
+
+func (s *recipientRecordingSender) Send(_ context.Context, msg sending.Message) (sending.SendResult, error) {
+	s.mu.Lock()
+	s.last = msg.Recipients
+	s.mu.Unlock()
+	return sending.SendResult{State: sending.StateDelivered, Code: 250}, nil
+}
+
+func (s *recipientRecordingSender) lastRecipients() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.last
+}
+
 // TestPipelineGracefulDrain checks that in-flight messages finish after cancel.
 func TestPipelineGracefulDrain(t *testing.T) {
 	q := queue.NewMemQueue()

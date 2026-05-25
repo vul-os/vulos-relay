@@ -235,6 +235,58 @@ func TestSubmit_Authentic_Returns202AndEnqueues(t *testing.T) {
 	}
 }
 
+// ─── Proof: per-IP rate cap rejects a flood from one source ──────────────────
+
+func TestSubmit_PerIPRateCap_RejectsFlood(t *testing.T) {
+	reg := relay.NewMemAccountRegistry()
+	reg.Register(relay.AccountRecord{AccountID: "acct", SharedSecret: []byte("x")})
+	auth := relay.NewSharedSecretAuth(reg)
+	router := relay.NewRouter(relay.RouterConfig{})
+	q := queue.NewMemQueue()
+	enq, err := newQueueEnqueuerAdapter(q)
+	if err != nil {
+		t.Fatalf("adapter: %v", err)
+	}
+
+	// Cap of 3 requests/min from any single IP, enforced before auth.
+	h := relay.NewSubmitHandler(relay.SubmitHandlerConfig{
+		Authenticator: auth,
+		Router:        router,
+		Queue:         enq,
+		PerIPLimit:    3,
+	})
+
+	do := func() int {
+		req := httptest.NewRequest(http.MethodPost, "/submit", strings.NewReader(string(validBody(t))))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "198.51.100.7:5555" // same source IP for all
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	// First 3 (unauthenticated) requests are allowed past the limiter (and then
+	// rejected as 401 by the auth gate). The 4th must be 429 from the limiter.
+	for i := 0; i < 3; i++ {
+		if code := do(); code == http.StatusTooManyRequests {
+			t.Fatalf("request %d hit the cap too early (got 429)", i+1)
+		}
+	}
+	if code := do(); code != http.StatusTooManyRequests {
+		t.Fatalf("4th request from same IP: want 429, got %d", code)
+	}
+
+	// A DIFFERENT IP is unaffected by the first IP's window.
+	req := httptest.NewRequest(http.MethodPost, "/submit", strings.NewReader(string(validBody(t))))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "203.0.113.9:6666"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code == http.StatusTooManyRequests {
+		t.Fatalf("a different IP must not be rate-limited by another IP's window, got 429")
+	}
+}
+
 // ─── Proof 5: RELAY_SUBMIT_DISABLE=1 → no listener bound ─────────────────────
 
 func TestSubmit_DisabledViaEnv_NoListenerBound(t *testing.T) {
@@ -259,7 +311,7 @@ func TestSubmit_DisabledViaEnv_NoListenerBound(t *testing.T) {
 	router := relay.NewRouter(relay.RouterConfig{})
 	q := queue.NewMemQueue()
 
-	srv, err := startSubmitListener(cfg, auth, router, q, nil)
+	srv, err := startSubmitListener(cfg, auth, router, q, nil, nil)
 	if err != nil {
 		t.Fatalf("startSubmitListener: %v", err)
 	}
@@ -298,7 +350,7 @@ func TestSubmit_EnabledViaConfig_TCPListenerRefusesUnauth(t *testing.T) {
 	router := relay.NewRouter(relay.RouterConfig{})
 	q := queue.NewMemQueue()
 
-	srv, err := startSubmitListener(cfg, auth, router, q, nil)
+	srv, err := startSubmitListener(cfg, auth, router, q, nil, nil)
 	if err != nil {
 		t.Fatalf("startSubmitListener: %v", err)
 	}

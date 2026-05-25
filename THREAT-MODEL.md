@@ -75,13 +75,15 @@ Trust boundaries:
 | 3 | **Information Disclosure** | SMTP banner or error messages from external MX leak information about the relay's internal queue state or IP. |
 
 ### Mitigations in code
-- DANE validation enforced where TLSA records exist; falls back to opportunistic TLS with CA verification.
+- **MTA-STS (RFC 8461) enforced** when `RELAY_MTASTS_ENABLE=1`: enforce-mode recipient domains require TLS to a policy-matching MX with a CA-valid certificate; a downgrade (STARTTLS stripped/failed) or a non-listed MX defers the message rather than delivering in the clear (`internal/sending/mtasts.go`).
+- A `required` outbound TLS policy refuses to deliver in plaintext after a failed/absent STARTTLS even when MTA-STS is not in play.
 - Per-destination delivery concurrency capped; stuck destinations time out independently.
 - Error messages logged locally only; not forwarded to external senders.
 
 ### Residual risks
-- DANE adoption is incomplete across the internet; many destinations use opportunistic TLS only (susceptible to active downgrade by a network attacker).
-- Queue retry state is in local SQLite; no HA failover for the sending pipeline.
+- **DANE/TLSA is NOT yet implemented** (it requires a DNSSEC-validating resolver + TLSA verification). For domains that publish only TLSA records and no MTA-STS policy, outbound TLS remains opportunistic (susceptible to active downgrade by a network attacker). Tracked as deferred follow-up.
+- MTA-STS discovery itself fails open: a transient HTTPS failure fetching the policy means no enforce policy is known for that attempt (a known, accepted RFC 8461 trade-off); a previously-cached enforce policy still applies for its `max_age`.
+- Queue retry state is in the local queue; no HA failover for the sending pipeline.
 
 ---
 

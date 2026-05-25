@@ -35,8 +35,26 @@ type PipelineConfig struct {
 	// queue is empty.  Default: 5 seconds.
 	PollInterval time.Duration
 
+	// Suppression, if non-nil, is consulted at the send gate: any recipient on
+	// the suppression list (hard-bounced or complained) is dropped before
+	// delivery, and a message left with no deliverable recipients is acked
+	// (suppressed) rather than sent. This is the deliverability control that
+	// stops the relay from re-sending to addresses that hard-bounced or filed
+	// complaints. The concrete *suppression.List is injected via this seam so
+	// the sending package does not import the suppression package.
+	Suppression SuppressionChecker
+
 	// Logger is used for operational messages.  If nil, the standard logger is used.
 	Logger *log.Logger
+}
+
+// SuppressionChecker is the minimal seam the pipeline needs from a suppression
+// list: partition recipients into allowed (deliverable) and dropped
+// (suppressed). *suppression.List satisfies it via FilterRecipients.
+type SuppressionChecker interface {
+	// FilterRecipients returns the recipients that may be delivered to and the
+	// recipients that are suppressed (dropped), preserving input order.
+	FilterRecipients(rcpts []string) (allowed, dropped []string)
 }
 
 func (c *PipelineConfig) workers() int {
@@ -155,11 +173,31 @@ loop:
 func (p *Pipeline) process(ctx context.Context, lm queue.LeasedMessage) {
 	logger := p.cfg.logger()
 
+	// Send-gate suppression check: drop recipients on the suppression list
+	// (hard-bounced or complained) BEFORE gating/delivery. If every recipient
+	// is suppressed there is nothing to send — ack the message so it is removed
+	// from the queue rather than retried against addresses we must never contact.
+	recipients := lm.Recipients
+	if p.cfg.Suppression != nil {
+		allowed, dropped := p.cfg.Suppression.FilterRecipients(lm.Recipients)
+		if len(dropped) > 0 {
+			logger.Printf("sending: message %s — %d recipient(s) suppressed and dropped: %v", lm.ID, len(dropped), dropped)
+		}
+		if len(allowed) == 0 {
+			logger.Printf("sending: message %s — all recipients suppressed; acking without delivery", lm.ID)
+			if ackErr := p.q.Ack(ctx, lm.ID); ackErr != nil {
+				logger.Printf("sending: Ack (all-suppressed) %s: %v", lm.ID, ackErr)
+			}
+			return
+		}
+		recipients = allowed
+	}
+
 	// Build the reputation.Message view.
 	repMsg := reputation.Message{
 		ID:         lm.ID,
 		Sender:     lm.Sender,
-		Recipients: lm.Recipients,
+		Recipients: recipients,
 		Size:       len(lm.RawRFC822),
 	}
 
@@ -190,12 +228,12 @@ func (p *Pipeline) process(ctx context.Context, lm queue.LeasedMessage) {
 		return
 	}
 
-	// 2. Deliver via the sender.
+	// 2. Deliver via the sender (only to the non-suppressed recipients).
 	sendMsg := Message{
 		ID:         lm.ID,
 		AccountID:  lm.AccountID,
 		Sender:     lm.Sender,
-		Recipients: lm.Recipients,
+		Recipients: recipients,
 		RawRFC822:  lm.RawRFC822,
 	}
 

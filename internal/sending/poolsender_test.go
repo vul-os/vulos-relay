@@ -107,6 +107,77 @@ func TestPoolSenderRampCapDefers(t *testing.T) {
 	}
 }
 
+// TestPoolSenderTrustGating proves the warm-IP trust-gating fix: an untrusted
+// (new) sender must NOT be selected onto the established (warm) IP, and an
+// established sender must be. With both a warm and a ramp IP available, the
+// segment is derived from the account's trust tier, not a hardcoded constant.
+func TestPoolSenderTrustGating(t *testing.T) {
+	pool := sending.NewPool()
+	warmIP := net.ParseIP("203.0.113.40")
+	rampIP := net.ParseIP("203.0.113.41")
+	pool.AddEntry(sending.PoolEntry{IP: warmIP, HELOName: "warm.example.com", Segment: sending.SegmentEstablished})
+	pool.AddEntry(sending.PoolEntry{IP: rampIP, HELOName: "ramp.example.com", Segment: sending.SegmentUntrusted})
+
+	// Trust source: only "vip" is established; everyone else is new/untrusted.
+	trust := sending.TrustSourceFunc(func(accountID string) sending.TrustTier {
+		if accountID == "vip" {
+			return sending.TrustEstablished
+		}
+		return sending.TrustNew
+	})
+
+	inner := &recordingSender{}
+	ps := &sending.PoolSender{Pool: pool, Inner: inner, Trust: trust}
+
+	// Untrusted sender → must land on the ramp/untrusted IP, never the warm IP.
+	res, err := ps.Send(context.Background(), sending.Message{ID: "u1", AccountID: "fresh-acct", Recipients: []string{"b@example.org"}})
+	if err != nil || res.State != sending.StateDelivered {
+		t.Fatalf("untrusted send: state=%s err=%v", res.State, err)
+	}
+	b := inner.lastBinding()
+	if b == nil || b.LocalIP == nil {
+		t.Fatal("untrusted: expected a bound IP")
+	}
+	if b.LocalIP.Equal(warmIP) {
+		t.Fatalf("trust-gating BYPASSED: untrusted sender was bound to the warm established IP %s", warmIP)
+	}
+	if !b.LocalIP.Equal(rampIP) {
+		t.Errorf("untrusted sender: want ramp IP %s, got %s", rampIP, b.LocalIP)
+	}
+
+	// Established sender → may ride the warm IP.
+	res, err = ps.Send(context.Background(), sending.Message{ID: "e1", AccountID: "vip", Recipients: []string{"b@example.org"}})
+	if err != nil || res.State != sending.StateDelivered {
+		t.Fatalf("established send: state=%s err=%v", res.State, err)
+	}
+	b = inner.lastBinding()
+	if b == nil || !b.LocalIP.Equal(warmIP) {
+		t.Errorf("established sender: want warm IP %s, got %v", warmIP, b)
+	}
+}
+
+// TestPoolSenderUntrustedDefersWhenOnlyWarm proves fail-closed behaviour: when
+// the ONLY pool IP is the warm/established segment, an untrusted sender is
+// deferred (retried later) rather than being handed the warm IP it has not
+// earned.
+func TestPoolSenderUntrustedDefersWhenOnlyWarm(t *testing.T) {
+	pool := sending.NewPool()
+	warmIP := net.ParseIP("203.0.113.50")
+	pool.AddEntry(sending.PoolEntry{IP: warmIP, Segment: sending.SegmentEstablished})
+
+	inner := &recordingSender{}
+	// nil Trust → fail closed to TrustNew (coldest). Must not promote to warm.
+	ps := &sending.PoolSender{Pool: pool, Inner: inner}
+
+	res, _ := ps.Send(context.Background(), sending.Message{ID: "u2", AccountID: "fresh", Recipients: []string{"b@example.org"}})
+	if res.State != sending.StateDeferred {
+		t.Fatalf("want deferred (no IP an untrusted sender may use), got %s", res.State)
+	}
+	if inner.count() != 0 {
+		t.Errorf("inner sender must not be called when only a warm IP exists for an untrusted sender; called %d", inner.count())
+	}
+}
+
 // TestPoolSenderBlocklistQuarantineDefers proves the blocklist quarantine takes
 // effect: quarantining the only pool IP (as BlocklistMonitor would) makes
 // selection fail and the send defer rather than using a listed IP.

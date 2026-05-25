@@ -68,8 +68,24 @@ type Receiver struct {
 	// (spec §3.2) that arrive on the ingress side-channel. Optional.
 	Resolver *StaticResolver
 
+	// Observer, if non-nil, receives peer-ingress delivery outcomes for metrics
+	// (a mail envelope delivered to the local sink, or rejected). It does not
+	// affect the wire protocol. Optional.
+	Observer PeerObserver
+
 	// Logf, if non-nil, logs rejections (for operator visibility). Optional.
 	Logf func(format string, args ...any)
+}
+
+// PeerObserver receives Vulos↔Vulos peer-ingress mail outcomes for metrics. It
+// must be non-blocking and concurrency-safe. Nil disables observation.
+type PeerObserver interface {
+	// PeerDelivered reports that a peer mail envelope passed all checks and was
+	// handed to local delivery.
+	PeerDelivered()
+	// PeerRejected reports that a peer mail envelope was rejected (permanent or
+	// transient). reason is a short classifier.
+	PeerRejected(reason string)
 }
 
 // Accept processes one inbound wire blob. It dispatches reputation and rotation
@@ -128,6 +144,7 @@ func (rc *Receiver) Accept(ctx context.Context, wire []byte) error {
 	// Mail envelope path.
 	env, err := UnmarshalEnvelope(wire)
 	if err != nil {
+		rc.observeReject("corrupt")
 		return ErrCorrupt
 	}
 	plain, err := Open(env, OpenParams{
@@ -137,6 +154,7 @@ func (rc *Receiver) Accept(ctx context.Context, wire []byte) error {
 	}, rc.Guard)
 	if err != nil {
 		rc.logf("peering: rejected envelope from %q: %v", env.Header.SenderDomain, err)
+		rc.observeReject("checks_failed")
 		return err
 	}
 
@@ -144,9 +162,19 @@ func (rc *Receiver) Accept(ctx context.Context, wire []byte) error {
 	if err := rc.Sink.Deliver(ctx, env.Header.MailFrom, env.Header.RcptTo, plain); err != nil {
 		// Local delivery failed — transient; the sending peer should retry.
 		rc.logf("peering: local delivery failed for %q: %v", env.Header.MailFrom, err)
+		rc.observeReject("local_delivery_failed")
 		return err
 	}
+	if rc.Observer != nil {
+		rc.Observer.PeerDelivered()
+	}
 	return nil
+}
+
+func (rc *Receiver) observeReject(reason string) {
+	if rc.Observer != nil {
+		rc.Observer.PeerRejected(reason)
+	}
 }
 
 func (rc *Receiver) logf(format string, args ...any) {

@@ -115,8 +115,21 @@ type BlocklistMonitorConfig struct {
 	// Default: 2 hours.
 	MaxRecheckInterval time.Duration
 
+	// QuarantineObserver, if non-nil, is notified each time an IP is newly
+	// quarantined (for metrics). It must be non-blocking and concurrency-safe.
+	QuarantineObserver QuarantineObserver
+
 	// Logger is used for operational messages. If nil, the standard logger is used.
 	Logger *log.Logger
+}
+
+// QuarantineObserver receives a notification when the BlocklistMonitor newly
+// quarantines an IP, so an external metrics layer can count quarantine events
+// without this package importing the prometheus stack.
+type QuarantineObserver interface {
+	// Quarantined reports that an IP was quarantined by the given blocklist
+	// source (e.g. "spamhaus", "sorbs").
+	Quarantined(source string)
 }
 
 func (c *BlocklistMonitorConfig) pollInterval() time.Duration {
@@ -310,6 +323,9 @@ func (m *BlocklistMonitor) Poll(ctx context.Context) {
 
 					if m.pool != nil {
 						m.pool.Quarantine(ip, fmt.Sprintf("blocklist:%s:%s", src.Name(), status.Reason))
+					}
+					if m.cfg.QuarantineObserver != nil {
+						m.cfg.QuarantineObserver.Quarantined(src.Name())
 					}
 
 					// Fire auto-delist (non-blocking; errors are logged).

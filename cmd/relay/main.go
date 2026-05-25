@@ -32,6 +32,7 @@ import (
 	"github.com/vul-os/vulos-relay/internal/relay"
 	"github.com/vul-os/vulos-relay/internal/reputation"
 	"github.com/vul-os/vulos-relay/internal/sending"
+	"github.com/vul-os/vulos-relay/internal/suppression"
 )
 
 const version = "0.0.1-dev"
@@ -97,6 +98,11 @@ type config struct {
 	// (default: 0 → handler default of 16 MiB).
 	SubmitMaxBytes int
 
+	// RELAY_SUBMIT_PER_IP_PER_MIN: maximum submission requests accepted per
+	// client IP per minute, enforced at the submit gate BEFORE authentication
+	// (DoS protection). 0 → handler default (120/min). Set negative to disable.
+	SubmitPerIPPerMin int
+
 	// DKIM signing.
 	// RELAY_DKIM_DOMAIN: signing domain (d= tag). When set, outbound mail is
 	// DKIM-signed with the rotator's current key. Empty = no signing.
@@ -109,6 +115,11 @@ type config struct {
 	// RELAY_SMTP_TLS_POLICY: "required" (secure default) or "opportunistic".
 	SMTPTLSPolicy string
 
+	// RELAY_MTASTS_ENABLE: when set, enforce RFC 8461 MTA-STS policies on the
+	// outbound path. Recipient domains publishing an `enforce` policy then
+	// REQUIRE TLS to a policy-matching MX with a valid cert; downgrades defer.
+	MTASTSEnable bool
+
 	// Warm-IP pool / ramp / blocklist wiring (RELAY-11/RELAY-09/RELAY-12).
 	// RELAY_POOL_IPS: comma-separated list of source IPs to warm and rotate.
 	// Each may be "ip" or "ip@helo" or "ip@helo@segment". Empty = no pool;
@@ -118,6 +129,12 @@ type config struct {
 	RampEnable bool
 	// RELAY_BLOCKLIST_ENABLE: enable DNSBL monitoring + quarantine over pool IPs.
 	BlocklistEnable bool
+
+	// RELAY_SUPPRESSION_ENABLE: enable the recipient suppression list +
+	// DSN/ARF report-intake endpoint. Defaults to true (secure default):
+	// hard-bounce/complaint reports suppress recipients and the send gate drops
+	// suppressed recipients. Set to 0/false to disable.
+	SuppressionEnable bool
 }
 
 // envString reads an env var, returning def if it is unset or empty.
@@ -175,12 +192,15 @@ func parseConfig() config {
 		SubmitAddr:            envString("RELAY_SUBMIT_ADDR", ":8025"),
 		SubmitDisabled:        envBool("RELAY_SUBMIT_DISABLE", false),
 		SubmitMaxBytes:        envInt("RELAY_SUBMIT_MAX_BYTES", 0),
+		SubmitPerIPPerMin:     envInt("RELAY_SUBMIT_PER_IP_PER_MIN", 0),
 		DKIMDomain:            envString("RELAY_DKIM_DOMAIN", ""),
 		DKIMKeyDir:            envString("RELAY_DKIM_KEY_DIR", ""),
 		SMTPTLSPolicy:         envString("RELAY_SMTP_TLS_POLICY", "required"),
+		MTASTSEnable:          envBool("RELAY_MTASTS_ENABLE", false),
 		PoolIPs:               envString("RELAY_POOL_IPS", ""),
 		RampEnable:            envBool("RELAY_RAMP_ENABLE", false),
 		BlocklistEnable:       envBool("RELAY_BLOCKLIST_ENABLE", false),
+		SuppressionEnable:     envBool("RELAY_SUPPRESSION_ENABLE", true),
 	}
 }
 
@@ -349,7 +369,17 @@ func (s *routerSink) Deliver(ctx context.Context, mailFrom string, rcptTo []stri
 // buildSMTPSender constructs an SMTPSender with optional source binding, DKIM
 // signing, and a TLS-enforcement policy.
 func buildSMTPSender(cfg config, signer sending.MessageSigner) *sending.SMTPSender {
-	s := &sending.SMTPSender{Signer: signer}
+	s := &sending.SMTPSender{Signer: signer, Observer: metricsObserver{}}
+
+	// MTA-STS (RFC 8461) enforcement on the outbound path. When enabled, a
+	// recipient domain publishing an `enforce` policy REQUIRES TLS to a
+	// policy-matching MX with a valid cert; a downgrade/mismatch defers.
+	if cfg.MTASTSEnable {
+		s.MTASTS = sending.NewMTASTSCache()
+		log.Printf("relay: MTA-STS enforcement ENABLED (RFC 8461) — enforce-mode recipient domains require valid TLS or delivery defers")
+	} else {
+		log.Printf("relay: MTA-STS enforcement DISABLED (set RELAY_MTASTS_ENABLE=1 to honor recipient MTA-STS policies)")
+	}
 
 	// TLS policy: secure by default (required). The operator must explicitly
 	// opt out per the documented knob to permit plaintext downgrade.
@@ -468,10 +498,37 @@ func parsePoolEntry(spec string) (sending.PoolEntry, bool) {
 	return e, true
 }
 
+// trustSourceFromPolicy derives a sending.TrustSource from the active
+// reputation policy. The bundled CappedPolicy tracks per-account clean-delivery
+// history and can classify accounts into real trust tiers; for any other
+// policy (e.g. Permissive, which keeps no history) we fail closed to the
+// coldest tier so an unclassified sender is never promoted onto warm IPs.
+func trustSourceFromPolicy(policy reputation.Policy) sending.TrustSource {
+	if cp, ok := policy.(*reputation.CappedPolicy); ok {
+		return sending.TrustSourceFunc(func(accountID string) sending.TrustTier {
+			switch cp.TrustTierFor(accountID) {
+			case reputation.AccountTrustEstablished:
+				return sending.TrustEstablished
+			case reputation.AccountTrustUntrusted:
+				return sending.TrustUntrusted
+			default:
+				return sending.TrustNew
+			}
+		})
+	}
+	// Fail closed: no per-account history available → coldest tier.
+	log.Printf("relay: warm-IP trust source: policy %T keeps no per-account history; all senders gated to the cold/ramp segment (set RELAY_POLICY=capped for reputation-derived trust tiers)", policy)
+	return sending.StaticTrustSource{Tier: sending.TrustNew}
+}
+
 // buildPoolSender wires the warm-IP Pool, RampScheduler, and BlocklistMonitor
 // into the send path when RELAY_POOL_IPS is configured. It returns the inner
 // sender unchanged (no pool) when no pool IPs are set.
-func buildPoolSender(ctx context.Context, cfg config, inner sending.Sender) sending.Sender {
+//
+// The trust source derived from the reputation policy decides which segment
+// each account's mail is selected from, so untrusted/new senders are confined
+// to the cold/ramp pool and only established senders ride the warm IPs.
+func buildPoolSender(ctx context.Context, cfg config, inner sending.Sender, trust sending.TrustSource) sending.Sender {
 	if cfg.PoolIPs == "" {
 		return inner
 	}
@@ -497,14 +554,20 @@ func buildPoolSender(ctx context.Context, cfg config, inner sending.Sender) send
 		return inner
 	}
 
+	if trust == nil {
+		// Defensive: never run the pool without a trust classifier, or every
+		// sender would default to the "best available" (warm) segment.
+		trust = sending.StaticTrustSource{Tier: sending.TrustNew}
+	}
 	ps := &sending.PoolSender{
 		Pool:  pool,
 		Inner: inner,
-		// Default selection hint: established. Operators running a static warm
-		// pool want their configured IPs used; the low-trust gating in
-		// Pool.Select is meaningful only when accounts are classified, which a
-		// tenant-aware deployment supplies by overriding SegmentFor.
-		SegmentFor: func(string) sending.SegmentName { return sending.SegmentEstablished },
+		// Derive the per-account segment from the real trust tier: new/untrusted
+		// senders are confined to the cold/ramp segments, established senders may
+		// ride the warm "established" IPs. Pool.Select additionally refuses to
+		// hand a low-trust account an established IP, so this is defence in depth.
+		Trust:    trust,
+		Observer: metricsObserver{},
 	}
 
 	if cfg.RampEnable {
@@ -513,7 +576,9 @@ func buildPoolSender(ctx context.Context, cfg config, inner sending.Sender) send
 	}
 
 	if cfg.BlocklistEnable {
-		monitor := reputation.NewBlocklistMonitor(pool, reputation.BlocklistMonitorConfig{})
+		monitor := reputation.NewBlocklistMonitor(pool, reputation.BlocklistMonitorConfig{
+			QuarantineObserver: metricsObserver{},
+		})
 		monitor.AddSource(&reputation.SpamhausSource{})
 		monitor.AddSource(&reputation.SORBSSource{})
 		for _, ip := range ips {
@@ -655,10 +720,13 @@ Environment variables:
   RELAY_SUBMIT_ADDR            HTTP submission listener address (default: ":8025")
   RELAY_SUBMIT_DISABLE         Set to 1 to skip binding the submission listener
   RELAY_SUBMIT_MAX_BYTES       Max submission body size (default: 16 MiB)
+  RELAY_SUBMIT_PER_IP_PER_MIN  Per-IP submission rate cap/min (default: 120; <0 disables)
   RELAY_ACCOUNTS_SECRET        Shared secret for a bootstrap "default" account
   RELAY_DKIM_DOMAIN            DKIM signing domain (d=); enables outbound DKIM signing
   RELAY_DKIM_KEY_DIR           Directory to persist DKIM keys (default: in-memory)
   RELAY_SMTP_TLS_POLICY        "required" (secure default) or "opportunistic"
+  RELAY_MTASTS_ENABLE          Enforce RFC 8461 MTA-STS on outbound SMTP (1/true)
+  RELAY_SUPPRESSION_ENABLE     Recipient suppression list + DSN/ARF intake (default: on)
   RELAY_POOL_IPS               Comma-list of warm-IP pool entries: ip[@helo[@segment]]
   RELAY_RAMP_ENABLE            Enable warm-up ramp caps over pool IPs (1/true)
   RELAY_BLOCKLIST_ENABLE       Enable DNSBL monitoring + quarantine over pool IPs (1/true)
@@ -708,7 +776,8 @@ Environment variables:
 	// effect on public SMTP delivery (the peer path uses its own transport and
 	// is not IP-rotated). When no pool is configured this returns smtpSender
 	// unchanged.
-	smtpEgress := buildPoolSender(ctx, cfg, smtpSender)
+	trustSource := trustSourceFromPolicy(policy)
+	smtpEgress := buildPoolSender(ctx, cfg, smtpSender, trustSource)
 
 	// Build peering resolver (operator peer table) and this node's identity.
 	resolver, err := buildResolver(cfg)
@@ -757,6 +826,7 @@ Environment variables:
 			Guard:      peering.NewReplayGuard(),
 			Resolver:   resolver,
 			Sink:       newRouterSink(router),
+			Observer:   metricsObserver{},
 		}
 		domList := make([]string, 0, len(authoritative))
 		for d := range authoritative {
@@ -766,16 +836,30 @@ Environment variables:
 			domList, peering.EncodeKey(peerIdentity.SignPub))
 	}
 
+	// Build the recipient suppression list (DSN hard-bounce + ARF/FBL
+	// complaint intake feeds it; the send gate drops suppressed recipients).
+	var suppressList *suppression.List
+	if cfg.SuppressionEnable {
+		suppressList = suppression.NewList()
+		suppressList.SetObserver(metricsObserver{})
+		log.Printf("relay: recipient suppression ENABLED — DSN/ARF reports POST to %s; suppressed recipients dropped at the send gate", suppression.IngressPath)
+	} else {
+		log.Printf("relay: recipient suppression DISABLED (set RELAY_SUPPRESSION_ENABLE=1) — hard-bounced/complained recipients will NOT be auto-dropped")
+	}
+
 	// Build and start pipeline.
 	pipelineCfg := sending.PipelineConfig{
 		Workers: cfg.Workers,
+	}
+	if suppressList != nil {
+		pipelineCfg.Suppression = suppressList
 	}
 	pipeline := sending.NewPipeline(q, policy, routingSender, pipelineCfg)
 
 	// Start the submission listener alongside the outbound pipeline. When
 	// peering is enabled, the same HTTP surface also serves the peering ingress
 	// endpoint (authenticated, encrypted; no open injection).
-	srv, srvErr := startSubmitListener(cfg, auth, router, q, peerReceiver)
+	srv, srvErr := startSubmitListener(cfg, auth, router, q, peerReceiver, suppressList)
 	if srvErr != nil {
 		log.Fatalf("relay: submit listener: %v", srvErr)
 	}
@@ -808,8 +892,8 @@ Environment variables:
 // the submission listener is disabled AND there is no peering ingress to serve,
 // it logs a warning and returns (nil, nil) — the caller treats that as "no
 // listener, queue-only mode."
-func startSubmitListener(cfg config, auth relay.SubmitAuthenticator, router *relay.Router, q queue.Queue, peerReceiver *peering.Receiver) (*http.Server, error) {
-	if cfg.SubmitDisabled && peerReceiver == nil {
+func startSubmitListener(cfg config, auth relay.SubmitAuthenticator, router *relay.Router, q queue.Queue, peerReceiver *peering.Receiver, suppressList *suppression.List) (*http.Server, error) {
+	if cfg.SubmitDisabled && peerReceiver == nil && suppressList == nil {
 		log.Printf("relay: WARNING — RELAY_SUBMIT_DISABLE is set; submission listener will not bind. " +
 			"The relay will only drain the queue. Open-relay prevention is enforced for any submission that " +
 			"reaches this binary via the HTTP path; in queue-only mode the operator is responsible for ensuring " +
@@ -831,16 +915,32 @@ func startSubmitListener(cfg config, auth relay.SubmitAuthenticator, router *rel
 			Router:        router,
 			Queue:         enq,
 			MaxBodyBytes:  int64(cfg.SubmitMaxBytes),
+			PerIPLimit:    cfg.SubmitPerIPPerMin,
+			Observer:      metricsObserver{},
 		})
 		mux.Handle("/submit", h)
+		if cfg.SubmitPerIPPerMin < 0 {
+			log.Printf("relay: submit per-IP rate cap DISABLED (RELAY_SUBMIT_PER_IP_PER_MIN<0)")
+		} else if cfg.SubmitPerIPPerMin == 0 {
+			log.Printf("relay: submit per-IP rate cap: 120/min (default; set RELAY_SUBMIT_PER_IP_PER_MIN to override)")
+		} else {
+			log.Printf("relay: submit per-IP rate cap: %d/min", cfg.SubmitPerIPPerMin)
+		}
 	} else {
-		log.Printf("relay: RELAY_SUBMIT_DISABLE is set; only the peering ingress endpoint will bind")
+		log.Printf("relay: RELAY_SUBMIT_DISABLE is set; submission endpoint will not bind")
 	}
 
 	// Peering ingress endpoint (authenticated, encrypted; no open injection).
 	if peerReceiver != nil {
 		mux.Handle(peering.PeeringPath, peering.IngressHandler(peerReceiver))
 		log.Printf("relay: peering ingress bound (POST %s)", peering.PeeringPath)
+	}
+
+	// DSN/ARF report-intake endpoint feeding the suppression list.
+	if suppressList != nil {
+		ih := suppression.NewIngressHandler(suppression.IngressConfig{List: suppressList})
+		mux.Handle(suppression.IngressPath, ih)
+		log.Printf("relay: suppression report intake bound (POST %s)", suppression.IngressPath)
 	}
 
 	srv := &http.Server{
