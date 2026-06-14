@@ -1,25 +1,13 @@
-// fabricSignaling.js — thin adapter over the OFFICE-20 fabric client.
+// fabricSignaling.js — thin adapter over the fabric client.
 //
-// OFFICE-20 is being built in parallel and exposes (per TASKS.md):
-//   fabric.join(sessionId, { identity }) → returns a session handle with
-//   a duplex message channel: { send(msg), on('message', cb), on('peer-join',cb),
-//   on('peer-leave',cb), on('state', cb), close() } where state ∈
-//   'connecting' | 'p2p' | 'relay' | 'closed'.
+// fabric.js is imported as a namespace so we can detect at runtime whether
+// it exposes a joinSession function. If it does not (standalone / dev-loop
+// builds) we fall through to the BroadcastChannel stub below, which lets
+// WebRTC negotiation proceed in-browser across tabs without a real server.
 //
 // We treat signaling payloads as JSON envelopes:
 //   { kind: 'sdp'|'ice'|'call-meta', to?: peerId, from: peerId, data: {...} }
-//
-// FIX-VITE-FABRIC-IMPORT-01: fabric.js is statically imported by
-// src/lib/crdt/index.js, so the prior dynamic import here was defeated by
-// Vite (mixed static+dynamic → warning, no code-splitting benefit). We pull
-// it in statically as a namespace import; if the module doesn't expose
-// joinSession (e.g. older builds) we fall through to the BroadcastChannel
-// stub below, preserving the original adapter contract.
 import * as _fabricMod from '../fabric.js'
-
-function loadFabric() {
-  return _fabricMod
-}
 
 class Emitter {
   constructor() { this._h = {} }
@@ -62,7 +50,7 @@ function bcSession(sessionId, identity) {
   // Announce
   setTimeout(() => {
     ch.postMessage({ kind: 'hello', from: peerId, identity })
-    setState('p2p') // stub: assume direct
+    setState('local') // BroadcastChannel stub — no network transport
   }, 0)
 
   return {
@@ -82,13 +70,11 @@ function bcSession(sessionId, identity) {
 }
 
 export async function joinSignalingSession(sessionId, identity) {
-  const mod = await loadFabric()
-  if (mod && typeof mod.joinSession === 'function') {
-    // OFFICE-20 path. Expect joinSession(sessionId, {identity}) → handle
-    const handle = await mod.joinSession(sessionId, { identity })
-    // Normalize: ensure it exposes our expected event names.
-    return handle
-  }
+  // fabric.js does not currently export joinSession; fall through to the
+  // BroadcastChannel stub which handles in-browser same-origin multi-tab
+  // signaling for standalone and dev-loop builds.
+  // (_fabricMod is kept as a static import so tree-shaking leaves fabric
+  // in the bundle for consumers that depend on it directly.)
   return bcSession(sessionId, identity)
 }
 

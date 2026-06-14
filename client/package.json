@@ -2,7 +2,7 @@
   "name": "@vulos/relay-client",
   "private": false,
   "version": "1.0.0",
-  "description": "JS client for the Vulos peer-fabric relay — endpoint failover, offline bootstrap, WebRTC signaling, presence, live cursors. The Go relay server lives in the parent repo (vulos-relay/relay/).",
+  "description": "JS client SDK for the Vulos peer-fabric — endpoint failover, offline bootstrap, WebRTC signaling, presence, live cursors. Talks to the host application's peering backend over HTTP/WebSocket.",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -75,19 +75,16 @@
     "LICENSE"
   ],
   "peerDependencies": {
-    "livekit-client": "^2.0.0",
     "react": "^18.0.0",
     "xlsx": "^0.18.0"
   },
   "peerDependenciesMeta": {
-    "livekit-client": { "optional": true },
     "react": { "optional": true },
     "xlsx": { "optional": true }
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.4.1",
     "jsdom": "^29.1.1",
-    "livekit-client": "^2.19.0",
     "react": "^18.3.1",
     "vite": "^6.3.5",
     "vitest": "^4.1.7",

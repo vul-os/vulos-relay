@@ -2,7 +2,7 @@
  * vite.config.lib.js — library build for @vulos/relay-client.
  *
  * Produces dist-lib/ with ESM + CJS bundles, one entry per subpath.
- * Externalizes react / livekit-client / xlsx so consumers can dedupe
+ * Externalizes react / xlsx so consumers can dedupe
  * (they're declared as optional peerDependencies in package.json).
  *
  * Usage: vite build --config vite.config.lib.js
@@ -46,7 +46,6 @@ export default defineConfig({
         'react',
         'react-dom',
         'react/jsx-runtime',
-        'livekit-client',
         'xlsx',
       ],
       output: {
@@ -55,7 +54,6 @@ export default defineConfig({
           react: 'React',
           'react-dom': 'ReactDOM',
           'react/jsx-runtime': 'ReactJSXRuntime',
-          'livekit-client': 'LiveKit',
           xlsx: 'XLSX',
         },
       },

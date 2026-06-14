@@ -1,4 +1,4 @@
-# Contributing to Vulos Relay
+# Contributing to @vulos/relay-client
 
 ## Code of Conduct
 
@@ -6,14 +6,16 @@ We follow the [Contributor Covenant v2.1](https://www.contributor-covenant.org/v
 
 ## Dev Environment Setup
 
-Requirements: Go 1.22+
+Requirements: Node.js 20+ and npm 10+.
 
 ```bash
-go build ./...
-go test ./...
+cd client
+npm ci
+npm run build
+npm test
 ```
 
-To run relay locally against a local Vulos Mail instance, copy `config.yaml.example` to `config.yaml` and adjust the SMTP upstream address.
+The SDK targets browser environments (WebSocket, BroadcastChannel, WebRTC). Tests run under Vitest with jsdom.
 
 ## Branch and PR Conventions
 
@@ -27,9 +29,9 @@ To run relay locally against a local Vulos Mail instance, copy `config.yaml.exam
 Conventional Commits welcome, not required:
 
 ```
-feat(peering): implement TLS mutual auth for relay-to-relay
-fix(queue): retry backoff capped at 4h
-chore: upgrade golang.org/x/net
+feat(signaling): retry WebSocket connection with exponential backoff
+fix(endpoints): fall back to same-origin when both cloud and LAN are down
+chore: upgrade vitest
 ```
 
 ## Testing Expectations
@@ -37,34 +39,32 @@ chore: upgrade golang.org/x/net
 Before opening a PR:
 
 ```bash
-go test ./...
-go vet ./...
+cd client
+npm test
 ```
 
-Changes to the sending pipeline or peering logic require tests. Security-relevant paths (TLS, auth) require explicit test coverage.
-
-## Finding a Good First Issue
-
-Look for `good first issue` or `help wanted` labels on GitHub.
+Changes to endpoint failover, signaling, or the offline queue require tests.
+Security-relevant paths (auth token handling, session isolation) require
+explicit test coverage.
 
 ## Scope: What We Say Yes and No To
 
 ### Yes
 - Bug fixes and security improvements
-- Improved retry / backoff strategies
-- TLS and mTLS improvements for peering
-- Reputation / denylist logic improvements
+- Endpoint failover and probe logic
+- Signaling reliability and reconnect strategies
+- Offline queue and service-worker bootstrap improvements
 - Tests and documentation
 
 ### No — frozen invariants
-- **No CGO** in any Go code. Pure Go only.
-- **No .tsx** files in any frontend helpers.
+- **No .tsx** files. JSX only, or plain JS.
+- **No Go code** — the Go mail daemon is retired. This repo is a pure JS SDK.
 - **No Google SSO / OAuth**.
 - **No Stripe billing**.
-- **No Rust rewrites** — Go throughout.
+- **No Rust rewrites**.
 - Features that require vulos-cloud coordination belong in vulos-cloud, not here.
 - New external dependencies without prior issue discussion.
 
 ## Licensing
 
-Vulos Relay is MIT-licensed. Contributions inherit MIT. No CLA required.
+@vulos/relay-client is MIT-licensed. Contributions inherit MIT. No CLA required.

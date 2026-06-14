@@ -1,19 +1,19 @@
-# Security Policy — Vulos Relay
+# Security Policy — @vulos/relay-client
 
 ## Scope
 
 ### In scope
-- Submission listener (SMTP ingress from Vulos Mail instances)
-- Sending pipeline and retry queue
-- Peering / federation between relay nodes
-- Reputation and denylist logic
-- Relay configuration and secret handling
+- Endpoint failover and probe logic (cloud / LAN selection, cache poisoning)
+- Signaling session isolation (cross-session message leakage)
+- Auth token handling (storage, transmission, expiry)
+- Offline queue integrity (replay attacks, queue tampering)
+- BroadcastChannel stub (same-origin message injection)
 
 ### Out of scope
-- Third-party Go module vulnerabilities — report to upstream maintainers
+- Third-party npm package vulnerabilities — report to upstream maintainers
 - Social engineering or phishing
-- Denial-of-service via high-volume SMTP floods (operational concern, not a code vulnerability)
-- Infrastructure outside this repository (DNS, hosting)
+- Infrastructure outside this repository (DNS, hosting, relay servers)
+- The retired Go mail daemon — that code no longer exists in this repo
 
 ## How to Report
 
@@ -23,7 +23,7 @@ PGP key: _placeholder — key will be published at https://vulos.org/.well-known
 **GitHub Security Advisories:** Use the "Report a vulnerability" button in the Security tab of this repository. Preferred channel.
 
 Please include:
-- Affected component (submission, sending, peering, reputation)
+- Affected component (endpoint selection, signaling, auth tokens, offline queue)
 - Steps to reproduce
 - Potential impact
 - Any suggested mitigations
@@ -41,8 +41,8 @@ Please include:
 Vulos commits to not pursuing legal action against researchers who:
 - Act in good faith to identify and report vulnerabilities
 - Do not exploit beyond demonstrating the issue
-- Do not intercept or inject real mail
-- Do not disrupt the relay's sending pipeline
+- Do not intercept or inject real user sessions
+- Do not disrupt live relay or signaling infrastructure
 - Disclose to us before public disclosure
 
 ## Bug Bounty

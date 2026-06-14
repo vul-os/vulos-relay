@@ -162,8 +162,8 @@ describe('bootstrapOffline', () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200 })))
     const m = await freshModule()
     m._resetForTests()
-    m.bootstrapOffline({ tierHint: () => ({ plan: 'pro', livekit: true }) })
-    expect(m.currentTierHint()).toEqual({ plan: 'pro', livekit: true })
+    m.bootstrapOffline({ tierHint: () => ({ plan: 'pro' }) })
+    expect(m.currentTierHint()).toEqual({ plan: 'pro' })
   })
 
   it('tierHint is undefined when no callback is supplied (OSS self-host)', async () => {

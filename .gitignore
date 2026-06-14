@@ -1,15 +1,10 @@
-# Compiled binaries
-/relay
-*.exe
-*.out
-*.test
+# JS build artifacts
+node_modules/
+dist-lib/
+/dist/
 
 # Databases
 *.db
-
-# Build artifacts
-/bin/
-/dist/
 
 # macOS + IDE
 .DS_Store

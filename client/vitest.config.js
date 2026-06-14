@@ -3,7 +3,7 @@
  *
  * Split from vite.config.lib.js so the library build (`npm run build`) and the
  * test runner (`npm test`) don't share each other's transform pipeline — the
- * lib build externalises react/livekit/xlsx, but the test runner needs them
+ * lib build externalises react/xlsx, but the test runner needs them
  * resolved in-process.
  */
 

@@ -27,11 +27,10 @@
  *   • opts.tierHint      — fn returning a tier-hint object/string that the
  *                          caller wants surfaced to the rest of the app. The
  *                          shared package treats it as opaque and exposes the
- *                          last returned value via `currentTierHint()`. This
- *                          is the migration seam for MEET-OS-01's Pro-tier
- *                          gating — the OS surface passes a callback that
- *                          reads the live cloud tier; the OSS self-host
- *                          surface omits it and gets undefined back.
+ *                          last returned value via `currentTierHint()`. The
+ *                          OS surface passes a callback that reads the live
+ *                          cloud tier; the OSS self-host surface omits it
+ *                          and gets undefined back.
  *
  * Also exposes:
  *   • onUpdateAvailable(cb) — invoked when an updated SW is waiting to take
@@ -147,7 +146,7 @@ export function bootstrapOffline(opts = {}) {
   //    re-selects on demand.
   selectEndpoint().catch(() => {})
 
-  // 3. Read an opt-in tier hint (MEET-OS-01 Pro-tier seam). Consumers that
+  // 3. Read an opt-in tier hint. Consumers that
   //    don't supply a callback get undefined and the rest of the shared
   //    package treats this as a no-op.
   if (opts && typeof opts.tierHint === 'function') {

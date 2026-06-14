@@ -5,10 +5,11 @@ Vulos web surface (the OS shell, `vulos-office`, `vulos-mail`); previously
 triple-duplicated as `src/lib/{endpoints,offlineBootstrap,signaling,fabric,
 presence,call,useLiveCursors,roundTripCheck}.js` across those three repos.
 
-This package is the **client** half of the relay: the Go server lives in the
-parent `vulos-relay/relay/` directory and is consumed via HTTP / WebSocket.
-The two halves intentionally don't share code — the relay server is Go and
-sits on the LAN/cloud; this package runs in the browser.
+This package runs in the browser and talks to the **host application's peering
+backend** (e.g. the Vulos OS `/api/peering/*` endpoints) over HTTP / WebSocket.
+It does not bundle a server. (A standalone Go mail-delivery daemon previously
+shipped in this repo; it was retired — mail delivery now lives in
+[vulos-mail](https://github.com/vul-os/vulos-mail).)
 
 ## Install
 
