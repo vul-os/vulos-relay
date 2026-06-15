@@ -16,6 +16,7 @@ const dir = import.meta.dirname
 
 const entries = {
   index:             resolve(dir, 'src/index.js'),
+  errors:            resolve(dir, 'src/errors.js'),
   endpoints:         resolve(dir, 'src/endpoints.js'),
   offlineBootstrap:  resolve(dir, 'src/offlineBootstrap.js'),
   signaling:         resolve(dir, 'src/signaling.js'),

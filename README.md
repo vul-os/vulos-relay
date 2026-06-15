@@ -62,11 +62,13 @@ The [release workflow](.github/workflows/release.yml) will:
 1. Install, build, and run tests.
 2. Verify the tag matches the version in `client/package.json`.
 3. Publish to npm (`--access public --provenance`) if `NPM_TOKEN` is set as a
-   repository secret.
+   repository secret. The gate uses a job-level output (`check-npm-token`) to
+   work around the GitHub Actions limitation where secrets cannot be evaluated
+   directly in `if:` expressions.
 4. Create a GitHub Release with the `dist-lib/` tarball attached.
 
-npm publish is gated on the `NPM_TOKEN` secret — if it is absent the GitHub
-Release is still created and the workflow succeeds.
+npm publish is gated on `NPM_TOKEN` — if it is absent the GitHub Release is
+still created and the workflow succeeds.
 
 See [CHANGELOG.md](CHANGELOG.md) for the history and [ROADMAP.md](ROADMAP.md)
 for planned directions.

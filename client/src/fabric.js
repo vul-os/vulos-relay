@@ -65,6 +65,10 @@ export class FabricClient extends EventTarget {
     this._iceServers = []
     this._relayPollTimer = null
     this._stopped = false
+    /** @type {CryptoKeyPair|null} — lazily generated on first deposit */
+    this._depositKeyPair = null
+    /** @type {string|null} — base64 raw public key for signaling announce */
+    this._depositPubKeyB64 = null
 
     this._signaling = new SignalingClient({ signalingUrl, sessionId, peerId, authToken })
     this._signaling.addEventListener('signal', (ev) => this._onSignal(ev.detail))
@@ -355,27 +359,87 @@ export class FabricClient extends EventTarget {
     }
   }
 
-  /** Deposit a message via the Vulos relay for a specific peer. */
+  /**
+   * Deposit a message via the Vulos relay for a specific peer.
+   *
+   * Integrity signature: the deposit payload (blob_b64 + nonce + to + from)
+   * is signed with a per-session ECDSA P-256 key held in memory.  The relay
+   * server SHOULD verify this signature using the public key exchanged during
+   * the signaling join — see `depositSignKey` in the join payload.  If the
+   * relay does not yet enforce signature verification it MUST at minimum check
+   * that the `from` field matches the authenticated peerId (JWT sub or
+   * Vula-Relay header).
+   *
+   * Trust model: unsigned deposits are rejected by a correctly-configured
+   * relay server.  Signed-but-unverified (relay not updated) degrades to the
+   * previous unsigned behaviour until the server enforces verification.
+   */
   async _relayDeposit(toPeerId, data) {
     try {
       const headers = { 'Content-Type': 'application/json' }
       if (this._authToken) headers['Authorization'] = `Bearer ${this._authToken}`
       const payload = { session: this._session, data }
       const blob_b64 = btoa(JSON.stringify(payload))
+      const nonce = crypto.randomUUID()
+
+      // Build the signing message: canonical JSON of the fields the server
+      // can reconstruct independently (to, from, nonce, blob_b64).
+      const signingMsg = JSON.stringify({
+        to: toPeerId,
+        from: this._peerId,
+        nonce,
+        blob_b64,
+      })
+
+      // Sign with the session signing key (lazily generated ECDSA P-256).
+      // The corresponding public key is published in the signaling join payload.
+      const sigB64 = await this._signDeposit(signingMsg)
+
       await fetch(`${this._relayBase}/api/peering/relay/deposit`, {
         method: 'POST',
         headers,
         body: JSON.stringify({
           to: toPeerId,
+          from: this._peerId,
           blob_b64,
           ttl_hours: RELAY_TTL_HOURS,
-          nonce: crypto.randomUUID(),
-          // Signature omitted in browser — relay accept policy depends on server trust config.
+          nonce,
+          sig: sigB64,
         }),
       })
     } catch (err) {
       console.warn('[fabric] relay deposit error:', err.message)
     }
+  }
+
+  /**
+   * Lazily generate (or reuse) a per-session ECDSA P-256 signing key and
+   * return a base64url signature over `message`.
+   *
+   * The public key is exported on first use so callers can include it in the
+   * signaling join announcement (server-side enforcement of deposit integrity).
+   *
+   * @param {string} message
+   * @returns {Promise<string>} base64url signature
+   */
+  async _signDeposit(message) {
+    if (!this._depositKeyPair) {
+      this._depositKeyPair = await crypto.subtle.generateKey(
+        { name: 'ECDSA', namedCurve: 'P-256' },
+        true,       // extractable so the public key can be exported
+        ['sign', 'verify'],
+      )
+      // Export the public key for signaling announcement.
+      const rawPub = await crypto.subtle.exportKey('raw', this._depositKeyPair.publicKey)
+      this._depositPubKeyB64 = btoa(String.fromCharCode(...new Uint8Array(rawPub)))
+    }
+    const enc = new TextEncoder()
+    const sigBuf = await crypto.subtle.sign(
+      { name: 'ECDSA', hash: 'SHA-256' },
+      this._depositKeyPair.privateKey,
+      enc.encode(message),
+    )
+    return btoa(String.fromCharCode(...new Uint8Array(sigBuf)))
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────────

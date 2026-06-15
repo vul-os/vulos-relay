@@ -6,17 +6,27 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "build": "vite build --config vite.config.lib.js",
+    "build": "vite build --config vite.config.lib.js && npm run build:types",
+    "build:types": "tsc -p tsconfig.dts.json",
     "test": "vitest run"
   },
   "main": "./dist-lib/index.cjs",
   "module": "./dist-lib/index.js",
+  "types": "./dist-lib/index.d.ts",
   "exports": {
     ".": {
       "source": "./src/index.js",
+      "types": "./dist-lib/index.d.ts",
       "import": "./dist-lib/index.js",
       "require": "./dist-lib/index.cjs",
       "default": "./dist-lib/index.js"
+    },
+    "./errors": {
+      "source": "./src/errors.js",
+      "types": "./dist-lib/errors.d.ts",
+      "import": "./dist-lib/errors.js",
+      "require": "./dist-lib/errors.cjs",
+      "default": "./dist-lib/errors.js"
     },
     "./endpoints": {
       "source": "./src/endpoints.js",
@@ -79,13 +89,18 @@
     "xlsx": "^0.18.0"
   },
   "peerDependenciesMeta": {
-    "react": { "optional": true },
-    "xlsx": { "optional": true }
+    "react": {
+      "optional": true
+    },
+    "xlsx": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.4.1",
     "jsdom": "^29.1.1",
     "react": "^18.3.1",
+    "typescript": "^5.9.3",
     "vite": "^6.3.5",
     "vitest": "^4.1.7",
     "xlsx": "^0.18.5"

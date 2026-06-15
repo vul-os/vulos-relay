@@ -166,3 +166,89 @@ describe('SignalingClient', () => {
     expect(frame.payload.type).toBe('leave')
   })
 })
+
+describe('SignalingClient reconnect budget', () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = []
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('emits "offline" after maxAttempts consecutive failures', async () => {
+    const c = new SignalingClient({
+      signalingUrl: 'ws://x/y',
+      sessionId: 'doc-1',
+      peerId: 'alice',
+      maxAttempts: 3,
+    })
+    const offlineCb = vi.fn()
+    c.addEventListener('offline', offlineCb)
+    c.connect()
+
+    // Trigger 3 close events (each schedules a reconnect, then we close again).
+    for (let i = 0; i < 3; i++) {
+      const ws = FakeWebSocket.instances[FakeWebSocket.instances.length - 1]
+      ws._fire('close', {})
+      await vi.runAllTimersAsync()
+    }
+
+    expect(offlineCb).toHaveBeenCalledTimes(1)
+    const { detail } = offlineCb.mock.calls[0][0]
+    expect(detail.attempts).toBeGreaterThanOrEqual(3)
+    c.close()
+  })
+
+  it('resets the attempt counter on a successful open', async () => {
+    const c = new SignalingClient({
+      signalingUrl: 'ws://x/y',
+      sessionId: 'doc-1',
+      peerId: 'alice',
+      maxAttempts: 2,
+    })
+    const offlineCb = vi.fn()
+    c.addEventListener('offline', offlineCb)
+    c.connect()
+
+    // One failure.
+    const ws0 = FakeWebSocket.instances[0]
+    ws0._fire('close', {})
+    await vi.runAllTimersAsync()
+
+    // Successful open on the new connection (counter resets).
+    const ws1 = FakeWebSocket.instances[FakeWebSocket.instances.length - 1]
+    ws1._open()
+
+    // One more failure after reset — budget should not be exhausted yet.
+    ws1._fire('close', {})
+    await vi.runAllTimersAsync()
+
+    expect(offlineCb).not.toHaveBeenCalled()
+    c.close()
+  })
+
+  it('emits "offline" only once even after many failures', async () => {
+    const c = new SignalingClient({
+      signalingUrl: 'ws://x/y',
+      sessionId: 'doc-1',
+      peerId: 'alice',
+      maxAttempts: 2,
+    })
+    const offlineCb = vi.fn()
+    c.addEventListener('offline', offlineCb)
+    c.connect()
+
+    for (let i = 0; i < 8; i++) {
+      const ws = FakeWebSocket.instances[FakeWebSocket.instances.length - 1]
+      ws._fire('close', {})
+      await vi.runAllTimersAsync()
+    }
+
+    expect(offlineCb).toHaveBeenCalledTimes(1)
+    c.close()
+  })
+})

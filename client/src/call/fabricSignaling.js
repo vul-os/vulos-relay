@@ -1,20 +1,188 @@
-// fabricSignaling.js — thin adapter over the fabric client.
+// fabricSignaling.js — real network signaling for cross-device WebRTC calls,
+// with an in-browser BroadcastChannel same-origin optimisation.
 //
-// fabric.js is imported as a namespace so we can detect at runtime whether
-// it exposes a joinSession function. If it does not (standalone / dev-loop
-// builds) we fall through to the BroadcastChannel stub below, which lets
-// WebRTC negotiation proceed in-browser across tabs without a real server.
+// Strategy:
+//   1. Detect whether a peering WebSocket URL is configured
+//      (window.__VULOS_ENDPOINTS__.signalingUrl or VITE_SIGNALING_URL env var,
+//      or derived from window.location).
+//   2. If yes → open a SignalingClient and adapt its EventTarget API to
+//      the lightweight on/off/emit surface that rtc.js expects.
+//   3. If not (standalone dev loop, no host) → fall back to BroadcastChannel
+//      so in-browser same-origin multi-tab negotiation still works.
 //
-// We treat signaling payloads as JSON envelopes:
-//   { kind: 'sdp'|'ice'|'call-meta', to?: peerId, from: peerId, data: {...} }
-import * as _fabricMod from '../fabric.js'
+// Signaling envelope (call layer, used by rtc.js):
+//   { kind: 'sdp'|'ice'|'screen-share'|..., to?: peerId,
+//     from: peerId, data: {...} }
+//
+// On the real WebSocket path SignalingClient wraps those as:
+//   { channel: "signal", from: peerId,
+//     payload: { type: kind, session, to, data } }
+
+import { SignalingClient } from '../signaling.js'
+import { SignalingError } from '../errors.js'
 import { Emitter } from './emitter.js'
 import { fetchIce } from './ice.js'
 
-// BroadcastChannel fallback signaling (in-browser same-origin multi-tab).
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+function _newPeerId(identity) {
+  return identity?.peerId || (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()))
+}
+
+/**
+ * Resolve a peering WebSocket URL from the environment.
+ *
+ * Resolution order:
+ *   1. window.__VULOS_ENDPOINTS__.signalingUrl  (runtime injection by OS shell)
+ *   2. VITE_SIGNALING_URL                       (build-time env var)
+ *   3. Derived from window.location             (wss://<host>/api/peering/stream)
+ *      — skipped in Node / test environments where window.location is absent.
+ *
+ * Returns null when no host can be determined (unit tests, SSR, pure offline).
+ * @returns {string|null}
+ */
+function _resolveSignalingUrl() {
+  try {
+    const injected = typeof window !== 'undefined' && window.__VULOS_ENDPOINTS__
+    if (injected && injected.signalingUrl) return injected.signalingUrl
+
+    const envUrl =
+      (typeof import.meta !== 'undefined' &&
+        import.meta.env &&
+        import.meta.env.VITE_SIGNALING_URL) ||
+      ''
+    if (envUrl) return envUrl
+
+    // Derive from the page origin — works when the SDK is loaded from the OS
+    // shell and the host serves /api/peering/stream on the same origin.
+    if (typeof window !== 'undefined' && window.location && window.location.hostname) {
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      return `${proto}//${window.location.host}/api/peering/stream`
+    }
+  } catch { /* non-browser environment */ }
+  return null
+}
+
+// ─── Real network signaling session (cross-device) ───────────────────────────
+
+/**
+ * Wrap a SignalingClient into the lightweight on/off/emit session surface that
+ * rtc.js (Call) and other callers expect.
+ *
+ * The session object is symmetric with the BroadcastChannel stub:
+ *   { peerId, identity, transport, state,
+ *     send(msg), on(ev,cb), off(ev,cb), close() }
+ *
+ * Events emitted:
+ *   'peer-join'  (peerId, identity)
+ *   'peer-leave' (peerId)
+ *   'message'    (msg)    — sdp / ice / screen-share / etc.
+ *   'state'      (string) — 'connecting'|'connected'|'reconnecting'|'closed'
+ *
+ * @param {string} sessionId
+ * @param {object|null} identity
+ * @param {string} signalingUrl
+ * @returns {object} session
+ */
+function networkSession(sessionId, identity, signalingUrl) {
+  const em = new Emitter()
+  const peerId = _newPeerId(identity)
+  const peers = new Set()
+  let state = 'connecting'
+
+  const setState = (s) => { state = s; em.emit('state', s) }
+
+  const sc = new SignalingClient({
+    signalingUrl,
+    sessionId,
+    peerId,
+    authToken: identity?.authToken || null,
+  })
+
+  // Bridge SignalingClient EventTarget events to the Emitter interface.
+  sc.addEventListener('signaling-open', () => {
+    setState('connected')
+    // Announce ourselves so peers already in the session learn about us.
+    sc.signal('join', null, { identity })
+  })
+
+  sc.addEventListener('signaling-close', () => {
+    setState('reconnecting')
+  })
+
+  sc.addEventListener('signal', (ev) => {
+    const { from, payload } = ev.detail
+    if (!payload) return
+
+    // Peer lifecycle signals.
+    if (payload.type === 'join') {
+      if (!peers.has(from)) {
+        peers.add(from)
+        em.emit('peer-join', from, payload.identity || null)
+      }
+      return
+    }
+    if (payload.type === 'leave') {
+      if (peers.delete(from)) em.emit('peer-leave', from)
+      return
+    }
+
+    // Media / data payloads: translate back to the call-layer envelope so
+    // PeerConn.handleSignal() in rtc.js receives a consistent shape.
+    const msg = {
+      kind: payload.type,    // 'sdp', 'ice', 'screen-share', etc.
+      from,
+      to: payload.to || null,
+      data: payload.data || {},
+      identity: payload.identity || null,
+    }
+    em.emit('message', msg)
+  })
+
+  sc.connect()
+
+  return {
+    peerId,
+    identity,
+    transport: 'ws',
+    get state() { return state },
+
+    /**
+     * Send a signaling message to a specific peer (or broadcast when to is
+     * omitted). The call layer passes { kind, to?, data, identity? }.
+     * @param {{ kind: string, to?: string, data?: object, identity?: object }} msg
+     */
+    send(msg) {
+      sc.signal(msg.kind, msg.to || null, {
+        data: msg.data,
+        identity: msg.identity,
+      })
+    },
+
+    on: em.on.bind(em),
+    off: em.off.bind(em),
+
+    close() {
+      sc.close()
+      setState('closed')
+    },
+  }
+}
+
+// ─── BroadcastChannel fallback (same-origin multi-tab, no network) ───────────
+
+/**
+ * Same-origin BroadcastChannel signaling stub for dev loops, Storybook, unit
+ * tests, and any context where no peering WebSocket is reachable.
+ *
+ * transport === 'bc-stub' so callers can detect the mode and warn.
+ * @param {string} sessionId
+ * @param {object|null} identity
+ * @returns {object} session
+ */
 function bcSession(sessionId, identity) {
   const em = new Emitter()
-  const peerId = identity?.peerId || (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()))
+  const peerId = _newPeerId(identity)
   const ch = new BroadcastChannel(`vulos-call:${sessionId}`)
   const peers = new Set()
   let state = 'connecting'
@@ -26,7 +194,7 @@ function bcSession(sessionId, identity) {
     if (!m || m.from === peerId) return
     if (m.kind === 'hello') {
       if (!peers.has(m.from)) { peers.add(m.from); em.emit('peer-join', m.from, m.identity) }
-      // reply so the new peer learns about us
+      // Reply so the new peer learns about us.
       ch.postMessage({ kind: 'hello-ack', from: peerId, identity, to: m.from })
       return
     }
@@ -42,7 +210,7 @@ function bcSession(sessionId, identity) {
     em.emit('message', m)
   }
 
-  // Announce
+  // Announce after the current microtask — identical timing to the WS path.
   setTimeout(() => {
     ch.postMessage({ kind: 'hello', from: peerId, identity })
     setState('local') // BroadcastChannel stub — no network transport
@@ -64,15 +232,45 @@ function bcSession(sessionId, identity) {
   }
 }
 
+// ─── Public API ───────────────────────────────────────────────────────────────
+
+/**
+ * Join a call signaling session.
+ *
+ * Prefers the real WebSocket peering path (transport: 'ws') for cross-device
+ * calls. Falls back to the BroadcastChannel stub (transport: 'bc-stub') only
+ * when no signaling URL can be resolved — i.e. the SDK is running in a
+ * standalone dev loop, a unit test, or a fully offline context where the OS
+ * shell has not injected window.__VULOS_ENDPOINTS__.signalingUrl and
+ * VITE_SIGNALING_URL is not set.
+ *
+ * Note: window.location-based derivation means that in normal browser
+ * deployments (the OS shell served from the same origin as the peering backend)
+ * the real network path is used automatically, without any explicit
+ * configuration.
+ *
+ * @param {string} sessionId
+ * @param {object|null} identity  — may carry .peerId and/or .authToken
+ * @returns {Promise<object>} session
+ *   { peerId: string, transport: 'ws'|'bc-stub', state: string,
+ *     send(msg), on(ev,cb), off(ev,cb), close() }
+ */
 export async function joinSignalingSession(sessionId, identity) {
-  // fabric.js does not currently export joinSession; fall through to the
-  // BroadcastChannel stub which handles in-browser same-origin multi-tab
-  // signaling for standalone and dev-loop builds.
-  // (_fabricMod is imported statically so that bundler analysis sees the
-  // dependency; tree-shaking will remove unused fabric exports from this
-  // chunk, but consumers that import fabric directly get it from its own
-  // entry point — see exports map in package.json.)
-  return bcSession(sessionId, identity)
+  const signalingUrl = _resolveSignalingUrl()
+  if (signalingUrl) {
+    return networkSession(sessionId, identity, signalingUrl)
+  }
+  // No network host available — same-origin tab stub only.
+  if (typeof BroadcastChannel !== 'undefined') {
+    return bcSession(sessionId, identity)
+  }
+  // Neither available (SSR / Node without polyfill).
+  throw new SignalingError(
+    '[fabricSignaling] No signaling transport available. ' +
+    'Set window.__VULOS_ENDPOINTS__.signalingUrl or VITE_SIGNALING_URL, ' +
+    'or ensure the SDK runs in a browser context.',
+    { code: 'NO_TRANSPORT' },
+  )
 }
 
 // Fetch TURN/STUN credentials from the cloud (OFFICE-20 path) with a sane

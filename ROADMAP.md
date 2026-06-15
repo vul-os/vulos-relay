@@ -12,8 +12,8 @@ priorities shift with Vulos OS milestones.
 - WebRTC signaling over host `/api/peering/stream` WebSocket
 - Fabric sessions — P2P data channels + relay-circuit fallback
 - Presence and live cursors (React hooks)
-- Call — mesh WebRTC (`createCall`) + LiveKit SFU (`createLiveKitRoom`)
-- Round-trip check fixture runner
+- Call — mesh WebRTC (`createCall`); LiveKit SFU was removed before 1.0
+- Round-trip check fixture runner (subpath `@vulos/relay-client/roundTripCheck`)
 - Dual ESM + CJS build; optional React / xlsx peer deps
 - Release pipeline with npm provenance and GitHub Releases
 

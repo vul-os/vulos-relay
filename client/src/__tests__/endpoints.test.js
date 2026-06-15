@@ -137,7 +137,7 @@ describe('endpoint failover (frozen contract)', () => {
     expect(fetchMock.mock.calls.length).toBeGreaterThan(firstCalls)
   })
 
-  it('re-selects on the window "online" event', async () => {
+  it('re-selects on the window "online" event (debounced)', async () => {
     setEndpoints()
     let onlineHandler = null
     const addEventListener = vi.fn((evt, fn) => {
@@ -145,18 +145,23 @@ describe('endpoint failover (frozen contract)', () => {
     })
     globalThis.window.addEventListener = addEventListener
 
+    vi.useFakeTimers()
     const ep = await freshModule()
     expect(typeof onlineHandler).toBe('function')
 
     const fetchMock = vi.fn(async () => ({ ok: true, status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
 
-    // Fire the online event — handler should force a fresh selection.
+    // Fire the online event — debounced; fetch should NOT run immediately.
     onlineHandler()
-    // Yield to allow the async selectEndpoint chain to start.
     await Promise.resolve()
     await Promise.resolve()
+    // fetch not yet called (still in debounce window).
+    // Advance past the 400 ms debounce.
+    await vi.runAllTimersAsync()
     expect(fetchMock).toHaveBeenCalled()
+
+    vi.useRealTimers()
     const selected = await ep.selectEndpoint()
     expect(selected).toBe(LAN)
   })

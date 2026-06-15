@@ -59,14 +59,34 @@ jobs:
           path: relay-client-${{ github.ref_name }}-dist.tar.gz
           retention-days: 1
 
-  publish-npm:
-    name: Publish to npm
+  check-npm-token:
+    name: Check NPM_TOKEN availability
     needs: build-and-test
     runs-on: ubuntu-24.04
-    # Only attempt npm publish when the NPM_TOKEN secret is present.
-    # If it is absent (forks, early tags) the job is simply skipped so the
-    # GitHub Release is still created by the next job.
-    if: vars.NPM_PUBLISH_ENABLED == 'true' || secrets.NPM_TOKEN != ''
+    outputs:
+      has_token: ${{ steps.probe.outputs.has_token }}
+    steps:
+      # Secrets cannot be read in `if:` expressions directly — map to an output
+      # first, then condition the publish job on that output.
+      - name: Probe for NPM_TOKEN
+        id: probe
+        run: |
+          if [ -n "$NPM_TOKEN_VAL" ]; then
+            echo "has_token=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_token=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          NPM_TOKEN_VAL: ${{ secrets.NPM_TOKEN }}
+
+  publish-npm:
+    name: Publish to npm
+    needs: check-npm-token
+    runs-on: ubuntu-24.04
+    # Gate on the output produced by check-npm-token, not on the secret
+    # expression directly (secret expressions always evaluate to empty in
+    # `if:` conditions, so `secrets.NPM_TOKEN != ''` never works).
+    if: needs.check-npm-token.outputs.has_token == 'true'
     defaults:
       run:
         working-directory: client
@@ -89,13 +109,7 @@ jobs:
       - name: Publish
         # --provenance attaches an OIDC-signed build provenance attestation to
         # the published package. Requires id-token: write at the workflow level.
-        # Falls back gracefully if the registry does not support it.
-        run: |
-          if [ -z "$NODE_AUTH_TOKEN" ]; then
-            echo "NPM_TOKEN secret not set — skipping npm publish"
-            exit 0
-          fi
-          npm publish --access public --provenance
+        run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

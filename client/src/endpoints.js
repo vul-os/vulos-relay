@@ -318,8 +318,22 @@ export function invalidateEndpoint() {
 
 // Re-select on connectivity changes so we fail over the moment the network
 // state flips (cloud-down → LAN, LAN-down → cloud, offline → online).
+//
+// Debounce: Wi-Fi handoffs and some mobile network transitions fire online +
+// offline in rapid succession, which without debouncing would trigger a
+// parallel storm of health probes — one for every event. A 400 ms quiet
+// period coalesces the burst into a single re-probe without meaningfully
+// delaying failover detection (which already has a REVALIDATE_AFTER_MS TTL).
 if (typeof window !== 'undefined' && window.addEventListener) {
-  const reselect = () => { selectEndpoint({ force: true }) }
+  const RESELECT_DEBOUNCE_MS = 400
+  let _reselectTimer = null
+  const reselect = () => {
+    if (_reselectTimer !== null) clearTimeout(_reselectTimer)
+    _reselectTimer = setTimeout(() => {
+      _reselectTimer = null
+      selectEndpoint({ force: true })
+    }, RESELECT_DEBOUNCE_MS)
+  }
   window.addEventListener('online', reselect)
   window.addEventListener('offline', reselect)
 }

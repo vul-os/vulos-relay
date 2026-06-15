@@ -27,15 +27,22 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - **Presence & live cursors** (`/presence`, `/useLiveCursors`) —
   `PresenceManager`, `usePresence` React hook, and `useLiveCursors` for
   multi-peer awareness.
-- **Call** (`/call`) — `createCall` (mesh WebRTC) + `createLiveKitRoom`
-  (SFU/Pro) with shared `Emitter` and ICE-fetch helpers; Bearer JWT fix on
-  relay pickup.
+- **Call** (`/call`) — `createCall` (P2P mesh WebRTC) with shared `Emitter`
+  and ICE-fetch helpers; Bearer JWT fix on relay pickup.
 - **Round-trip check** (`/roundTripCheck`) — `runRoundTripChecks` fixture
   runner for integration testing.
 - Dual ESM + CJS build via `vite build --config vite.config.lib.js`.
 - Release pipeline: `.github/workflows/release.yml` — tag `v*` triggers build
   + test, optional npm publish with OIDC provenance, and a GitHub Release
   attaching the `dist-lib/` tarball.
+
+### Removed
+
+- **`createLiveKitRoom` (LiveKit SFU support)** — the SFU/large-room path
+  was removed before 1.0. The product uses P2P mesh (`createCall`) exclusively.
+  Any consumer that referenced `createLiveKitRoom` must migrate to `createCall`.
+  LiveKit is listed in the 1.0 CHANGELOG by mistake and is **not** in the
+  published package.
 
 ### Changed
 

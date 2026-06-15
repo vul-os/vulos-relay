@@ -19,17 +19,19 @@
 
 const RECONNECT_BASE_MS = 1_000
 const RECONNECT_MAX_MS = 30_000
+const RECONNECT_MAX_ATTEMPTS = 10  // after this many failures emit 'offline'
 const SIGNAL_CHANNEL = 'signal'
 
 export class SignalingClient extends EventTarget {
   /**
    * @param {object} opts
-   * @param {string}   opts.signalingUrl  - WebSocket URL, e.g. "ws://localhost:8080/api/peering/stream"
-   * @param {string}   opts.sessionId     - fabric session / document id
-   * @param {string}   opts.peerId        - this client's identity token (injected by auth)
-   * @param {string}  [opts.authToken]    - Bearer JWT (if auth is enabled)
+   * @param {string}   opts.signalingUrl     - WebSocket URL, e.g. "ws://localhost:8080/api/peering/stream"
+   * @param {string}   opts.sessionId        - fabric session / document id
+   * @param {string}   opts.peerId           - this client's identity token (injected by auth)
+   * @param {string}  [opts.authToken]       - Bearer JWT (if auth is enabled)
+   * @param {number}  [opts.maxAttempts]     - max reconnect attempts before 'offline' (default 10)
    */
-  constructor({ signalingUrl, sessionId, peerId, authToken = null }) {
+  constructor({ signalingUrl, sessionId, peerId, authToken = null, maxAttempts = RECONNECT_MAX_ATTEMPTS }) {
     super()
     this._url = signalingUrl
     this._session = sessionId
@@ -37,7 +39,10 @@ export class SignalingClient extends EventTarget {
     this._authToken = authToken
     this._ws = null
     this._reconnectDelay = RECONNECT_BASE_MS
+    this._reconnectAttempts = 0
+    this._maxAttempts = maxAttempts
     this._stopped = false
+    this._degraded = false
   }
 
   /** Connect (or reconnect) to the signaling WebSocket. */
@@ -52,6 +57,8 @@ export class SignalingClient extends EventTarget {
 
     ws.addEventListener('open', () => {
       this._reconnectDelay = RECONNECT_BASE_MS
+      this._reconnectAttempts = 0
+      this._degraded = false
       this.dispatchEvent(new CustomEvent('signaling-open'))
       // Announce ourselves to the session room.
       this._send({ type: 'join', session: this._session })
@@ -107,6 +114,22 @@ export class SignalingClient extends EventTarget {
   }
 
   _scheduleReconnect() {
+    this._reconnectAttempts++
+
+    // Once the budget is exhausted, emit a terminal 'offline' event so
+    // consumers can show a degraded-mode banner rather than waiting forever.
+    if (this._reconnectAttempts >= this._maxAttempts) {
+      if (!this._degraded) {
+        this._degraded = true
+        this.dispatchEvent(new CustomEvent('offline', {
+          detail: { attempts: this._reconnectAttempts },
+        }))
+      }
+      // Continue trying — but at the max delay — so the connection recovers
+      // automatically when the network comes back, while consumers know we are
+      // in degraded mode.
+    }
+
     const delay = this._reconnectDelay
     this._reconnectDelay = Math.min(this._reconnectDelay * 2, RECONNECT_MAX_MS)
     setTimeout(() => this.connect(), delay)
