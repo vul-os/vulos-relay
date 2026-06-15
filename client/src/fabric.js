@@ -315,15 +315,19 @@ export class FabricClient extends EventTarget {
     }
     try {
       const headers = { 'Content-Type': 'application/json' }
-      if (this._authToken) headers['Authorization'] = `Bearer ${this._authToken}`
+      if (this._authToken) {
+        // Bearer JWT takes precedence when present; fall back to the unauthenticated
+        // Vula-Relay scheme (peerId.timestamp) only when no JWT is configured.
+        headers['Authorization'] = `Bearer ${this._authToken}`
+      } else {
+        // Relay auth header: "Vula-Relay <peerId>.<ts>" (simplified for browser;
+        // unsigned — relay accept policy depends on server trust config).
+        headers['Authorization'] = `Vula-Relay ${this._peerId}.${Math.floor(Date.now() / 1000)}`
+      }
 
       const res = await fetch(`${this._relayBase}/api/peering/relay/pickup`, {
         method: 'GET',
-        headers: {
-          ...headers,
-          // Relay auth header: "Vula-Relay <peerId>.<ts>" (simplified for browser)
-          Authorization: `Vula-Relay ${this._peerId}.${Math.floor(Date.now() / 1000)}`,
-        },
+        headers,
       })
       if (!res.ok) return
       const { blobs } = await res.json()

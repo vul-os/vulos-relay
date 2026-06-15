@@ -68,8 +68,10 @@ export async function joinSignalingSession(sessionId, identity) {
   // fabric.js does not currently export joinSession; fall through to the
   // BroadcastChannel stub which handles in-browser same-origin multi-tab
   // signaling for standalone and dev-loop builds.
-  // (_fabricMod is kept as a static import so tree-shaking leaves fabric
-  // in the bundle for consumers that depend on it directly.)
+  // (_fabricMod is imported statically so that bundler analysis sees the
+  // dependency; tree-shaking will remove unused fabric exports from this
+  // chunk, but consumers that import fabric directly get it from its own
+  // entry point — see exports map in package.json.)
   return bcSession(sessionId, identity)
 }
 

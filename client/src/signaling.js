@@ -38,7 +38,6 @@ export class SignalingClient extends EventTarget {
     this._ws = null
     this._reconnectDelay = RECONNECT_BASE_MS
     this._stopped = false
-    this._messageHandlers = new Set()
   }
 
   /** Connect (or reconnect) to the signaling WebSocket. */
