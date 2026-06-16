@@ -47,10 +47,13 @@ jobs:
           fi
 
       # Archive dist-lib/ so the GitHub Release step can attach it.
+      # Output path ../relay-client-*.tar.gz lands at the repo root (one level
+      # above the client/ default working-directory) where upload-artifact picks
+      # it up by its bare filename (upload-artifact paths are relative to
+      # $GITHUB_WORKSPACE, i.e. the repo root).
       - name: Archive dist-lib
         run: |
           tar -czf ../relay-client-${{ github.ref_name }}-dist.tar.gz dist-lib/
-        working-directory: client
 
       - name: Upload dist artifact
         uses: actions/upload-artifact@v4
