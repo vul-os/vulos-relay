@@ -24,7 +24,7 @@ configure({
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `lsKeyPrefix` | `string` | `'vulos.relay-client.endpoints.v1'` | `localStorage` key for caching the endpoint pair. Pass your pre-migration surface-specific key to avoid forcing a re-probe on first post-migration load. |
-| `healthPath` | `string` | `'/api/auth/status'` | Relative path appended to each candidate base URL for reachability probes. Any HTTP response (including 401/403) counts as reachable. `vulos-mail` uses `'/api/auth/me'`. |
+| `healthPath` | `string` | `'/api/auth/status'` | Relative path appended to each candidate base URL for reachability probes. Any HTTP response (including 401/403) counts as reachable. Surfaces with a different auth endpoint can pass their own path here. |
 
 ### `window.__VULOS_ENDPOINTS__`
 
@@ -184,6 +184,6 @@ configure({ lsKeyPrefix: 'vulos.os.endpoints.v1' })
 // vulos-office
 configure({ lsKeyPrefix: 'vulos.office.endpoints.v1' })
 
-// vulos-mail (different health path)
-configure({ lsKeyPrefix: 'vulos.mail.endpoints.v1', healthPath: '/api/auth/me' })
+// custom surface with a different health path
+configure({ lsKeyPrefix: 'vulos.custom.endpoints.v1', healthPath: '/api/auth/me' })
 ```

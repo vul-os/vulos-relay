@@ -1,12 +1,11 @@
 /**
  * endpoints.test.js — cloud↔LAN failover (frozen contract).
  *
- * Union of the three pre-existing test suites:
- *   • vulos-office/src/__tests__/endpoints.test.js          (6 cases)
- *   • vulos-mail/webmail-vulos/src/__tests__/endpoints.test.js (8 cases)
- *   • vulos/src/__tests__/endpoints.test.js                  (13 cases)
+ * Union of the pre-existing test suites:
+ *   • vulos-office/src/__tests__/endpoints.test.js (6 cases)
+ *   • vulos/src/__tests__/endpoints.test.js        (13 cases)
  *
- * Deduped — every distinct behaviour from the three is covered exactly once.
+ * Deduped — every distinct behaviour from both is covered exactly once.
  * Adds three new cases for the @vulos/relay-client migration seams:
  *   • configure() lsKeyPrefix overrides the localStorage namespace
  *   • configure() healthPath overrides the probe URL
@@ -252,6 +251,6 @@ describe('configure() — migration seams for the three consumers', () => {
     expect(localStorage.getItem(DEFAULT_LS_KEY)).not.toBeNull()
     expect(localStorage.getItem('vulos.os.endpoints.v1')).toBeNull()
     expect(localStorage.getItem('vulos.office.endpoints.v1')).toBeNull()
-    expect(localStorage.getItem('vulos.mail.endpoints.v1')).toBeNull()
+    expect(localStorage.getItem('vulos.custom.endpoints.v1')).toBeNull()
   })
 })

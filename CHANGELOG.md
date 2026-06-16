@@ -11,9 +11,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Added
 
-- **`@vulos/relay-client` JS SDK** — the repo's sole deliverable after the Go
-  daemon retirement. Shared by every Vulos web surface (the OS shell,
-  `vulos-office`, `vulos-mail`).
+- **`@vulos/relay-client` JS SDK** — the repo's sole deliverable. Shared by
+  every Vulos web surface (the OS shell, `vulos-office`).
 - **Endpoint failover** (`/endpoints`) — cloud ↔ LAN backend selection with
   health probing, configurable localStorage key prefix, and configurable health
   path per consumer (`configure()`).
@@ -46,15 +45,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Changed
 
-- **Go mail-delivery daemon retired** (commit `54769ad`). The standalone
-  SMTP/DKIM/MTA-STS/federation daemon that previously lived in this repo has
-  been removed. Mail delivery is now owned by
-  [vulos-mail](https://github.com/vul-os/vulos-mail) (a Mox fork). The
-  `vulos-relay` repo is now a pure JS SDK.
 - Deduplicated `src/lib/{endpoints,offlineBootstrap,signaling,fabric,presence,
   call,useLiveCursors,roundTripCheck}.js` that had been copy-pasted across
-  `vulos`, `vulos-office`, and `vulos-mail` into this single package
-  (`RELAY-CLIENT-01`).
+  `vulos` and `vulos-office` into this single package (`RELAY-CLIENT-01`).
+- `vulos-relay` repo is a pure JS SDK; no server-side code is included.
 
 ### Security
 

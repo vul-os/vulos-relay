@@ -8,6 +8,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/vul-os/vulos-relay/actions/workflows/ci.yml/badge.svg)](https://github.com/vul-os/vulos-relay/actions/workflows/ci.yml)
 
+<img src="docs/assets/vulos-logo.png" alt="Vulos" width="48" />
+
+Part of the **[Vulos](https://vulos.org)** OS suite
+
 *Vulos — rooted in **vula**, the Zulu and Xhosa word for **open**.*
 
 ![Vulos Relay](docs/screenshots/hero.png)
@@ -19,20 +23,13 @@
 ## Overview
 
 This repository provides **`@vulos/relay-client`**, the shared JavaScript SDK
-used by every Vulos web surface (the OS shell,
-[vulos-office](https://github.com/vul-os/vulos-office),
-[vulos-mail](https://github.com/vul-os/vulos-mail)) for peer-fabric and
+used by every Vulos web surface (the OS shell and
+[vulos-office](https://github.com/vul-os/vulos-office)) for peer-fabric and
 connectivity concerns.
 
 The SDK runs entirely in the browser and talks to the **host application's own
 peering backend** (e.g. the Vulos OS `/api/peering/*` endpoints) over HTTP and
 WebSocket. It does not bundle a server.
-
-> **History.** This repo previously also shipped a standalone Go
-> *mail-delivery daemon* (outbound SMTP/DKIM/MTA-STS + Vulos↔Vulos mail
-> peering). That daemon was **retired** — mail delivery is now owned entirely
-> by [vulos-mail](https://github.com/vul-os/vulos-mail), a Mox fork.
-> The `vulos-relay` repo is now a pure JS SDK.
 
 ---
 

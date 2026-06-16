@@ -2,24 +2,20 @@
  * endpoints.js — @vulos/relay-client multi-endpoint failover.
  *
  * Shared cloud↔LAN endpoint failover for every Vulos web surface (the OS shell,
- * vulos-office, vulos-mail). Previously triple-duplicated as
- * `vulos/src/lib/endpoints.js`, `vulos-office/src/lib/endpoints.js`, and
- * `vulos-mail/webmail-vulos/src/lib/endpoints.js` (all byte-near). Promoted
- * here verbatim from the vulos OS copy (the richest of the three — it owned
- * `seedFromResolveBackend`) with two new opt-in config seams so the three
- * consumers can migrate without disturbing their existing user state:
+ * vulos-office). Previously duplicated as `vulos/src/lib/endpoints.js` and
+ * `vulos-office/src/lib/endpoints.js`. Promoted here from the vulos OS copy
+ * (the richest — it owned `seedFromResolveBackend`) with two new opt-in config
+ * seams so consumers can migrate without disturbing their existing user state:
  *
  *   • `lsKeyPrefix`  — localStorage namespace (default
  *                      'vulos.relay-client.endpoints.v1'). Consumers that
  *                      already have a populated cache pass their old key
- *                      ('vulos.os.endpoints.v1', 'vulos.office.endpoints.v1',
- *                      or 'vulos.mail.endpoints.v1') via `configure()` so the
- *                      first post-migration load sees the same cached pair and
- *                      no failover re-probe is forced.
+ *                      ('vulos.os.endpoints.v1', 'vulos.office.endpoints.v1')
+ *                      via `configure()` so the first post-migration load sees
+ *                      the same cached pair and no failover re-probe is forced.
  *   • `healthPath`   — relative URL appended to a base for the reachability
- *                      probe. Defaults to /api/auth/status (OS + office); mail
- *                      passes /api/auth/me. Both endpoints are cheap and
- *                      always-mounted on the OS/cloud backend.
+ *                      probe. Defaults to /api/auth/status. Surfaces that use
+ *                      a different auth endpoint can override this value.
  *
  * Behaviour (frozen contract — identical across all three surfaces):
  *
@@ -108,8 +104,8 @@ export function onEndpointChange(fn) {
  *
  *   configure({ lsKeyPrefix: 'vulos.os.endpoints.v1' })       // OS surface
  *   configure({ lsKeyPrefix: 'vulos.office.endpoints.v1' })   // office suite
- *   configure({ lsKeyPrefix: 'vulos.mail.endpoints.v1',
- *               healthPath:  '/api/auth/me' })                 // webmail
+ *   configure({ lsKeyPrefix: 'my.app.endpoints.v1',
+ *               healthPath:  '/api/health' })                  // custom surface
  *
  * @param {{ lsKeyPrefix?: string, healthPath?: string }} opts
  */

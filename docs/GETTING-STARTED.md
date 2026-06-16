@@ -4,7 +4,7 @@
 
 - Node.js 20+ and npm 10+
 - A host application that exposes `/api/peering/*` endpoints (e.g. the Vulos OS
-  shell, vulos-office, or vulos-mail)
+  shell or vulos-office)
 
 ## Install
 
@@ -24,9 +24,6 @@ The Vulos repos consume the SDK as a workspace-local dependency:
 
 // vulos-office/package.json
 "@vulos/relay-client": "file:../vulos-relay/client"
-
-// vulos-mail/webmail-vulos/package.json (nested)
-"@vulos/relay-client": "file:../../vulos-relay/client"
 ```
 
 ## First integration

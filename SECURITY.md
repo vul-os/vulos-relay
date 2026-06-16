@@ -13,7 +13,7 @@
 - Third-party npm package vulnerabilities — report to upstream maintainers
 - Social engineering or phishing
 - Infrastructure outside this repository (DNS, hosting, relay servers)
-- The retired Go mail daemon — that code no longer exists in this repo
+- Infrastructure outside this repository (DNS, hosting, relay servers) beyond what is listed above
 
 ## How to Report
 

@@ -1,12 +1,10 @@
 /**
  * offlineBootstrap.js — @vulos/relay-client offline-first shell bootstrap.
  *
- * Merged from the three pre-existing copies:
- *   • vulos/src/lib/offlineBootstrap.js          (127 LOC — most complete:
+ * Merged from the pre-existing copies:
+ *   • vulos/src/lib/offlineBootstrap.js        (127 LOC — most complete:
  *     also handles SW update detection, plus startOfflineQueueFlushLoop()).
- *   • vulos-office/src/lib/offlineBootstrap.js   (40 LOC).
- *   • vulos-mail/webmail-vulos/src/lib/offlineBootstrap.js (46 LOC — kicks
- *     startOutboxFlushLoop()).
+ *   • vulos-office/src/lib/offlineBootstrap.js (40 LOC).
  *
  * Three responsibilities, run once at app entry:
  *   1. Register the service worker (default '/sw.js') that caches the app
@@ -14,8 +12,8 @@
  *      route — down.
  *   2. Prime the cloud↔LAN endpoint selection so the first API call already
  *      has a reachable endpoint chosen.
- *   3. Start any consumer-supplied background flush loops (mail's outbox,
- *      OS's offline queue, etc.) via the `onBoot` callback option.
+ *   3. Start any consumer-supplied background flush loops (OS offline queue,
+ *      etc.) via the `onBoot` callback option.
  *
  * Optional injection points — all opt-in, so the shared package is not
  * consumer-specific:

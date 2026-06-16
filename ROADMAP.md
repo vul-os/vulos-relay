@@ -63,8 +63,8 @@ priorities shift with Vulos OS milestones.
 
 ## Out of scope (frozen invariants)
 
-- Shipping a Go server, SMTP daemon, or any server-side process — the daemon
-  was retired; server-side concerns belong in vulos-mail / vulos-cloud.
+- Shipping a Go server or any server-side process — this repo is a pure JS SDK;
+  server-side concerns belong in vulos-cloud.
 - Google SSO / OAuth.
 - Stripe billing.
 - Rust rewrites.

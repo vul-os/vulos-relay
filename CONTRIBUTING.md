@@ -58,7 +58,7 @@ explicit test coverage.
 
 ### No — frozen invariants
 - **No .tsx** files. JSX only, or plain JS.
-- **No Go code** — the Go mail daemon is retired. This repo is a pure JS SDK.
+- **No Go code** — this repo is a pure JS SDK. No server-side code.
 - **No Google SSO / OAuth**.
 - **No Stripe billing**.
 - **No Rust rewrites**.

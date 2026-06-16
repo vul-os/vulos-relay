@@ -1,15 +1,13 @@
 # @vulos/relay-client
 
 MIT-licensed JS client for the Vulos peer-fabric relay. Shared by every
-Vulos web surface (the OS shell, `vulos-office`, `vulos-mail`); previously
-triple-duplicated as `src/lib/{endpoints,offlineBootstrap,signaling,fabric,
-presence,call,useLiveCursors,roundTripCheck}.js` across those three repos.
+Vulos web surface (the OS shell, `vulos-office`); previously duplicated as
+`src/lib/{endpoints,offlineBootstrap,signaling,fabric,
+presence,call,useLiveCursors,roundTripCheck}.js` across those repos.
 
 This package runs in the browser and talks to the **host application's peering
 backend** (e.g. the Vulos OS `/api/peering/*` endpoints) over HTTP / WebSocket.
-It does not bundle a server. (A standalone Go mail-delivery daemon previously
-shipped in this repo; it was retired — mail delivery now lives in
-[vulos-mail](https://github.com/vul-os/vulos-mail).)
+It does not bundle a server.
 
 ## Install
 
@@ -22,13 +20,9 @@ layout:
 
 // vulos-office/package.json  (sibling)
 "@vulos/relay-client": "file:../vulos-relay/client"
-
-// vulos-mail/webmail-vulos/package.json  (nested)
-"@vulos/relay-client": "file:../../vulos-relay/client"
 ```
 
-Consumer migrations live in `RELAY-CLIENT-02/03/04` in each consumer's
-`tasks.md`. This package is the Wave C foundation (`RELAY-CLIENT-01`).
+This package is the Wave C foundation (`RELAY-CLIENT-01`).
 
 ## Subpath exports
 
@@ -51,10 +45,9 @@ declared as optional peer dependencies so consumers dedupe them.
 ## Migration compatibility — `configure()`
 
 `endpoints.js` previously used a per-surface localStorage key
-(`vulos.os.endpoints.v1`, `vulos.office.endpoints.v1`,
-`vulos.mail.endpoints.v1`). The shared module defaults to
-`vulos.relay-client.endpoints.v1` but exposes a `configure()` seam so the
-three consumers can preserve their existing user state during migration:
+(`vulos.os.endpoints.v1`, `vulos.office.endpoints.v1`). The shared module
+defaults to `vulos.relay-client.endpoints.v1` but exposes a `configure()`
+seam so consumers can preserve their existing user state during migration:
 
 ```js
 import { configure } from '@vulos/relay-client/endpoints'
@@ -64,12 +57,6 @@ configure({ lsKeyPrefix: 'vulos.os.endpoints.v1' })
 
 // vulos-office:
 configure({ lsKeyPrefix: 'vulos.office.endpoints.v1' })
-
-// vulos-mail (different health path, too):
-configure({
-  lsKeyPrefix: 'vulos.mail.endpoints.v1',
-  healthPath:  '/api/auth/me',
-})
 ```
 
 ## OS-specific extensions — `tierHint`
