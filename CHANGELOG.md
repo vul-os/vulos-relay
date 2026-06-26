@@ -12,7 +12,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 ### Added
 
 - **`@vulos/relay-client` JS SDK** — the repo's sole deliverable. Shared by
-  every Vulos web surface (the OS shell, `vulos-office`).
+  every Vulos web surface (the Vulos OS shell, `vulos-office`, `vulos-talk`).
 - **Endpoint failover** (`/endpoints`) — cloud ↔ LAN backend selection with
   health probing, configurable localStorage key prefix, and configurable health
   path per consumer (`configure()`).
@@ -38,10 +38,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 ### Removed
 
 - **`createLiveKitRoom` (LiveKit SFU support)** — the SFU/large-room path
-  was removed before 1.0. The product uses P2P mesh (`createCall`) exclusively.
-  Any consumer that referenced `createLiveKitRoom` must migrate to `createCall`.
-  LiveKit is listed in the 1.0 CHANGELOG by mistake and is **not** in the
-  published package.
+  was removed before 1.0; it is **not** part of the published package. The
+  product uses the P2P mesh (`createCall`) exclusively. Any consumer that once
+  referenced `createLiveKitRoom` must migrate to `createCall`.
 
 ### Changed
 

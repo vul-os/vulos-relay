@@ -1,8 +1,8 @@
 # @vulos/relay-client
 
 MIT-licensed JS client for the Vulos peer-fabric relay. Shared by every
-Vulos web surface (the OS shell, `vulos-office`); previously duplicated as
-`src/lib/{endpoints,offlineBootstrap,signaling,fabric,
+Vulos web surface (the Vulos OS shell, `vulos-office`, `vulos-talk`); previously
+duplicated as `src/lib/{endpoints,offlineBootstrap,signaling,fabric,
 presence,call,useLiveCursors,roundTripCheck}.js` across those repos.
 
 This package runs in the browser and talks to the **host application's peering
@@ -34,13 +34,13 @@ This package is the Wave C foundation (`RELAY-CLIENT-01`).
 | `@vulos/relay-client/signaling`  | `SignalingClient` over `/api/peering/stream` WebSocket  |
 | `@vulos/relay-client/fabric`     | `FabricClient` — WebRTC mesh + relay-circuit fallback   |
 | `@vulos/relay-client/presence`   | `PresenceManager` + `usePresence` React hook            |
-| `@vulos/relay-client/call`       | `createCall` (mesh) + `createLiveKitRoom` (SFU/Pro)     |
+| `@vulos/relay-client/call`       | `createCall` — P2P mesh audio/video call                |
 | `@vulos/relay-client/useLiveCursors` | live-cursors React hook (`peerColor`)               |
 | `@vulos/relay-client/roundTripCheck` | round-trip fixture runner (`runRoundTripChecks`)    |
 
 Both ESM (`.js`) and CJS (`.cjs`) bundles are emitted into `dist-lib/` by the
-vite-lib build (`npm run build`). React, `livekit-client`, and `xlsx` are
-declared as optional peer dependencies so consumers dedupe them.
+vite-lib build (`npm run build`). `react` and `xlsx` are declared as optional
+peer dependencies so consumers dedupe them.
 
 ## Migration compatibility — `configure()`
 

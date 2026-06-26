@@ -22,12 +22,17 @@ Part of the **[Vulos](https://vulos.org)** OS suite
 
 ## What is this?
 
-`@vulos/relay-client` is the browser-side SDK that every Vulos web surface — the
-OS shell and [vulos-office](https://github.com/vul-os/vulos-office) — uses to
-wire peers together. It opens **WebRTC peer-to-peer data channels** between
-collaborators, multiplexes signaling, presence, and live cursors over them, and
-**falls back to a relay circuit** whenever a direct connection can't be
-established.
+Relay is the **connectivity fabric for the whole Vulos suite**. The browser-side
+SDK, `@vulos/relay-client`, is consumed directly by every Vulos web surface — the
+[Vulos OS shell](https://github.com/vul-os/vulos), [vulos-office](https://github.com/vul-os/vulos-office),
+and [vulos-talk](https://github.com/vul-os/vulos-talk) — to wire peers together.
+[Vulos Workspace](https://github.com/vul-os/vulos-workspace), the combination
+shell that brings the products under one login, surfaces Relay as a first-class
+app in its launcher, but the products import this client themselves.
+
+The SDK opens **WebRTC peer-to-peer data channels** between collaborators,
+multiplexes signaling, presence, and live cursors over them, and **falls back to
+a relay circuit** whenever a direct connection can't be established.
 
 It is a **client only** — no server ships in this package. The SDK talks to its
 host application's `/api/peering/*` endpoints over HTTP and WebSocket for

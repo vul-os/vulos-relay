@@ -19,10 +19,13 @@ npm install @vulos/relay-client
 The Vulos repos consume the SDK as a workspace-local dependency:
 
 ```jsonc
-// vulos/package.json
+// vulos/package.json (the OS shell)
 "@vulos/relay-client": "file:../vulos-relay/client"
 
 // vulos-office/package.json
+"@vulos/relay-client": "file:../vulos-relay/client"
+
+// vulos-talk/package.json
 "@vulos/relay-client": "file:../vulos-relay/client"
 ```
 

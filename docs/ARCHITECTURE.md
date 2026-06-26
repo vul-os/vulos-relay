@@ -152,8 +152,7 @@ was removed before 1.0 — the product uses P2P mesh (≤ 5 peers) exclusively.
 ## Dual build
 
 The SDK ships both ESM (`.js`) and CJS (`.cjs`) bundles from a Vite lib build.
-React, `livekit-client`, and `xlsx` are optional peer dependencies so consumers
-deduplicate them.
+`react` and `xlsx` are optional peer dependencies so consumers deduplicate them.
 
 ## Trust model
 
