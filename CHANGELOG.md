@@ -9,7 +9,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
-## [1.0.0] — 2026-06-15
+## [0.1.0] — 2026-06-28
 
 ### Added
 
@@ -60,4 +60,4 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ---
 
-[1.0.0]: https://github.com/vul-os/vulos-relay/releases/tag/v1.0.0
+[0.1.0]: https://github.com/vul-os/vulos-relay/releases/tag/v0.1.0
