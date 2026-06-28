@@ -7,6 +7,7 @@
   "type": "module",
   "scripts": {
     "build": "vite build --config vite.config.lib.js && npm run build:types",
+    "build:lib": "vite build --config vite.config.lib.js",
     "build:types": "tsc -p tsconfig.dts.json",
     "test": "vitest run"
   },

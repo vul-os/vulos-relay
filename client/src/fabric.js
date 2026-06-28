@@ -115,6 +115,18 @@ export class FabricClient extends EventTarget {
       // Publish the deposit signing public key in the join frame so the relay
       // server can bind it to our authenticated peerId and verify deposit sigs.
       getDepositPubKey: () => this._depositPubKeyB64,
+      // ── E2E peer authentication (security audit MEDIUM) ────────────────────
+      // Wire the per-session ECDSA signing key into the signaling layer so that
+      // all outgoing offer/answer/ice frames are signed.  The canonical signing
+      // message includes `from` (binding sender identity) and, for offer/answer,
+      // the full SDP (pinning the DTLS fingerprint).  Receivers verify using the
+      // sender's pubkey from the prior 'join' frame or the embedded pubKey field.
+      signFrame: (msg) => this._signDeposit(msg),
+      // requirePeerAuth=false (default): frames from peers that have published a
+      // pubkey are ALWAYS verified; frames from keyless peers are allowed through
+      // for backward compatibility with pre-auth SDK versions.  Set to true in a
+      // fully-upgraded deployment to reject all unsigned peers.
+      requirePeerAuth: false,
     })
     this._signaling.addEventListener('signal', (ev) => this._onSignal(ev.detail))
     this._signaling.addEventListener('signaling-open', () => {
@@ -250,7 +262,13 @@ export class FabricClient extends EventTarget {
       const offer = await pc.createOffer()
       await pc.setLocalDescription(offer)
       this._setRelayTimer(remoteId, ps)
-      this._signaling.signal('offer', remoteId, { sdp: pc.localDescription.sdp })
+      // Include pubKey so the recipient can verify even before our 'join'
+      // was processed (handles out-of-order delivery).  The SDP embeds the
+      // DTLS fingerprint; signing the full payload pins it end-to-end.
+      await this._signaling.signal('offer', remoteId, {
+        sdp: pc.localDescription.sdp,
+        pubKey: this._depositPubKeyB64,
+      })
       this._setPeerState(remoteId, ps, 'connecting')
     } catch (err) {
       console.error('[fabric] offer error:', err)
@@ -262,7 +280,11 @@ export class FabricClient extends EventTarget {
 
     pc.addEventListener('icecandidate', ({ candidate }) => {
       if (candidate) {
+        // signal() is async (signs the frame); fire-and-forget from this sync
+        // event handler.  ICE candidates are best-effort — a dropped candidate
+        // only delays connectivity, it does not break the session.
         this._signaling.signal('ice', remoteId, { candidate: candidate.toJSON() })
+          .catch(err => console.warn('[fabric] ICE signal error:', err))
       }
     })
 
@@ -349,7 +371,13 @@ export class FabricClient extends EventTarget {
         const answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
         this._setRelayTimer(from, ps)
-        this._signaling.signal('answer', from, { sdp: pc.localDescription.sdp })
+        // Include pubKey in answer for the same reason as in the offer: allows
+        // the offerer to verify even if they missed our 'join'.  The signed SDP
+        // also pins the answerer's DTLS fingerprint against MITM swap.
+        await this._signaling.signal('answer', from, {
+          sdp: pc.localDescription.sdp,
+          pubKey: this._depositPubKeyB64,
+        })
         this._setPeerState(from, ps, 'connecting')
       } catch (err) {
         console.error('[fabric] answer error:', err)

@@ -167,6 +167,22 @@ function makeFabric({ peerId = 'local-peer', authToken = null } = {}) {
 /** Drain the microtask queue so that async event handlers resolve. */
 function flush() { return new Promise(r => setTimeout(r, 0)) }
 
+// ── WebCrypto stub ─────────────────────────────────────────────────────────────
+// Outgoing offer/answer/ice frames are now signed with ECDSA P-256 (E2E auth).
+// Node's native crypto.subtle.sign() resolves via libuv (a macrotask callback),
+// which would fire AFTER the test's `await flush()` and cause timing failures.
+// Stub it to return a microtask-resolved Promise so the signing latency is
+// invisible to these flow/timing tests.  Peer-auth tests use the real WebCrypto.
+const FAKE_SIG = new Uint8Array(64).buffer
+const FAKE_KEY = {
+  type: 'public', algorithm: { name: 'ECDSA', namedCurve: 'P-256' },
+  extractable: false, usages: ['verify'],
+}
+const FAKE_KEY_PAIR = {
+  privateKey: { type: 'private', algorithm: { name: 'ECDSA', namedCurve: 'P-256' }, extractable: false, usages: ['sign'] },
+  publicKey: FAKE_KEY,
+}
+
 beforeEach(() => {
   FakeWebSocket.instances = []
   FakeWebSocket.last = null
@@ -179,6 +195,13 @@ beforeEach(() => {
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   vi.spyOn(console, 'info').mockImplementation(() => {})
   vi.spyOn(console, 'error').mockImplementation(() => {})
+
+  // Stub WebCrypto to resolve synchronously (microtask) instead of via libuv.
+  vi.spyOn(crypto.subtle, 'generateKey').mockResolvedValue(FAKE_KEY_PAIR)
+  vi.spyOn(crypto.subtle, 'exportKey').mockResolvedValue(new Uint8Array(65).buffer)
+  vi.spyOn(crypto.subtle, 'sign').mockResolvedValue(FAKE_SIG)
+  vi.spyOn(crypto.subtle, 'verify').mockResolvedValue(true)
+  vi.spyOn(crypto.subtle, 'importKey').mockResolvedValue(FAKE_KEY)
 })
 
 afterEach(() => { vi.restoreAllMocks() })
@@ -327,6 +350,10 @@ describe('FabricClient — signaling join / ICE negotiation flow', () => {
     pc._iceCandidate({
       toJSON: () => ({ candidate: 'candidate:1 1 UDP...', sdpMid: '0', sdpMLineIndex: 0 }),
     })
+
+    // signal() is now async (signs the frame); wait one tick for the
+    // fire-and-forget Promise to resolve before checking ws.sent.
+    await flush()
 
     const iceFrame = ws.sent.find(raw => {
       try { return JSON.parse(raw).payload?.type === 'ice' } catch { return false }
