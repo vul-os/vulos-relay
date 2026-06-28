@@ -18,6 +18,7 @@ const entries = {
   index:             resolve(dir, 'src/index.js'),
   errors:            resolve(dir, 'src/errors.js'),
   endpoints:         resolve(dir, 'src/endpoints.js'),
+  health:            resolve(dir, 'src/health.js'),
   offlineBootstrap:  resolve(dir, 'src/offlineBootstrap.js'),
   signaling:         resolve(dir, 'src/signaling.js'),
   fabric:            resolve(dir, 'src/fabric.js'),

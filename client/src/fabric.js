@@ -28,6 +28,25 @@
 import { SignalingClient } from './signaling.js'
 import { fetchIce, resolveStunFallback } from './call/ice.js'
 
+/**
+ * Byte-length of a relay payload datum.  Used by the billing meter to count
+ * application-payload bytes without HTTP framing or base64 expansion.
+ *
+ * @param {string|ArrayBuffer|ArrayBufferView|any} data
+ * @returns {number}
+ */
+function _byteSize(data) {
+  if (data == null) return 0
+  if (data instanceof ArrayBuffer) return data.byteLength
+  if (ArrayBuffer.isView(data)) return data.byteLength
+  const s = typeof data === 'string' ? data : JSON.stringify(data)
+  try {
+    return new TextEncoder().encode(s).byteLength
+  } catch {
+    return s.length   // safe fallback when TextEncoder unavailable
+  }
+}
+
 const DATA_CHANNEL_LABEL = 'vulos-office-fabric'
 const RELAY_TIMEOUT_MS = 8_000        // give P2P this long before falling back
 const RELAY_POLL_MS = 2_000           // relay pickup polling interval
@@ -77,6 +96,16 @@ export class FabricClient extends EventTarget {
     this._depositKeyPair = null
     /** @type {string|null} — base64 raw public key for signaling announce */
     this._depositPubKeyB64 = null
+
+    // ── Billing G-1: authoritative relay byte meter ───────────────────────────
+    // Counts payload bytes transported via the relay fallback path.  These are
+    // the bytes of the application `data` argument (not HTTP framing or base64
+    // overhead).  The host backend reads these via relayByteCount / emits them
+    // to CP as usage.  See docs/RELAY_BYTE_METER.md for the full contract.
+    /** @type {number} bytes deposited (sent) via relay in this session */
+    this._relayedBytesOut = 0
+    /** @type {number} bytes picked up (received) via relay in this session */
+    this._relayedBytesIn = 0
 
     this._signaling = new SignalingClient({
       signalingUrl,
@@ -140,6 +169,44 @@ export class FabricClient extends EventTarget {
     const out = {}
     for (const [id, ps] of this._peers) out[id] = ps.state
     return out
+  }
+
+  // ── Billing G-1: relay byte meter ─────────────────────────────────────────
+
+  /**
+   * Authoritative relay byte count for this session.
+   *
+   * Contract (see docs/RELAY_BYTE_METER.md):
+   *   • `out` — total application-payload bytes deposited to the relay server.
+   *   • `in`  — total application-payload bytes picked up from the relay server.
+   *   • `total` — `out + in` (useful for cap enforcement / billing period quota).
+   *
+   * "Payload bytes" means the byte length of the `data` argument to send() /
+   * sendTo() that was routed through the relay; HTTP framing and base64
+   * expansion are NOT counted.  This is the number CP should debit against the
+   * session's relay allowance.
+   *
+   * The host backend should read this counter at the end of a session (or on a
+   * periodic flush) and emit it to CP via the usage-report endpoint.
+   *
+   * @returns {{ out: number, in: number, total: number }}
+   */
+  get relayByteCount() {
+    return {
+      out: this._relayedBytesOut,
+      in:  this._relayedBytesIn,
+      total: this._relayedBytesOut + this._relayedBytesIn,
+    }
+  }
+
+  /**
+   * Reset the relay byte counters to zero.
+   * Call at the start of each billing period / usage-report flush window so
+   * the host backend can report incremental usage rather than cumulative totals.
+   */
+  resetRelayByteCount() {
+    this._relayedBytesOut = 0
+    this._relayedBytesIn = 0
   }
 
   // ─── ICE / TURN ────────────────────────────────────────────────────────────
@@ -362,6 +429,8 @@ export class FabricClient extends EventTarget {
         try {
           const msg = JSON.parse(atob(blob.blob_b64))
           if (msg.session !== this._session) continue
+          // ── billing meter: count inbound payload bytes ─────────────────────
+          this._relayedBytesIn += _byteSize(msg.data)
           this.dispatchEvent(new CustomEvent('message', { detail: { from: blob.from, data: msg.data } }))
           ackIds.push(blob.id)
         } catch { /* malformed blob, skip */ }
@@ -396,6 +465,8 @@ export class FabricClient extends EventTarget {
    * previous unsigned behaviour until the server enforces verification.
    */
   async _relayDeposit(toPeerId, data) {
+    // ── billing meter: count outbound payload bytes before encoding ──────────
+    this._relayedBytesOut += _byteSize(data)
     try {
       const headers = { 'Content-Type': 'application/json' }
       if (this._authToken) headers['Authorization'] = `Bearer ${this._authToken}`

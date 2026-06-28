@@ -21,6 +21,7 @@
 
 export * from './errors.js'
 export * from './endpoints.js'
+export * from './health.js'
 export * from './offlineBootstrap.js'
 export * from './signaling.js'
 export * from './fabric.js'

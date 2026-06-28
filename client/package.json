@@ -77,6 +77,13 @@
       "require": "./dist-lib/useLiveCursors.cjs",
       "default": "./dist-lib/useLiveCursors.js"
     },
+    "./health": {
+      "source": "./src/health.js",
+      "types": "./dist-lib/health.d.ts",
+      "import": "./dist-lib/health.js",
+      "require": "./dist-lib/health.cjs",
+      "default": "./dist-lib/health.js"
+    },
     "./roundTripCheck": {
       "source": "./src/roundTripCheck.js",
       "types": "./dist-lib/roundTripCheck.d.ts",
