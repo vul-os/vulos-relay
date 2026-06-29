@@ -52,6 +52,11 @@ const RELAY_TIMEOUT_MS = 8_000        // give P2P this long before falling back
 const RELAY_POLL_MS = 2_000           // relay pickup polling interval
 const RELAY_TTL_HOURS = 1
 
+// ── DoS / resource caps ───────────────────────────────────────────────────────
+const MAX_PENDING_CANDIDATES = 50     // per-peer ICE candidate queue (MED-DoS)
+const MAX_PEERS = 50                  // per-session peer map (MED-DoS)
+const MAX_PAYLOAD_BYTES = 256 * 1024  // data-channel + relay blob cap, 256 KB (MED-DoS)
+
 export class FabricClient extends EventTarget {
   /**
    * @param {object} opts
@@ -69,6 +74,12 @@ export class FabricClient extends EventTarget {
    *          (anyone can claim any peerId), so it is OFF by default; without it
    *          and without a JWT, the relay request is sent with no Authorization
    *          header and the server's accept policy decides.
+   * @param {boolean} [opts.requirePeerAuth=true]
+   *        - when true (default), offer/answer/ice frames from peers with no
+   *          stored public key are dropped — only keyed (signed) peers can
+   *          establish WebRTC connections. Set to false to revert to TOFU-only
+   *          behaviour and accept unsigned frames from unknown peers (needed
+   *          when interoperating with pre-auth SDK versions).
    */
   constructor({
     sessionId,
@@ -78,6 +89,7 @@ export class FabricClient extends EventTarget {
     relayBaseUrl = '',
     authToken = null,
     allowUnsignedRelayAuth = false,
+    requirePeerAuth = true,
   }) {
     super()
     this._session = sessionId
@@ -86,6 +98,7 @@ export class FabricClient extends EventTarget {
     this._relayBase = relayBaseUrl
     this._authToken = authToken
     this._allowUnsignedRelayAuth = allowUnsignedRelayAuth
+    this._requirePeerAuth = requirePeerAuth
 
     /** @type {Map<string, PeerState>} */
     this._peers = new Map()
@@ -122,11 +135,11 @@ export class FabricClient extends EventTarget {
       // the full SDP (pinning the DTLS fingerprint).  Receivers verify using the
       // sender's pubkey from the prior 'join' frame or the embedded pubKey field.
       signFrame: (msg) => this._signDeposit(msg),
-      // requirePeerAuth=false (default): frames from peers that have published a
-      // pubkey are ALWAYS verified; frames from keyless peers are allowed through
-      // for backward compatibility with pre-auth SDK versions.  Set to true in a
-      // fully-upgraded deployment to reject all unsigned peers.
-      requirePeerAuth: false,
+      // Surface the caller-supplied requirePeerAuth (default true).  When true,
+      // offer/answer/ice frames from peers with no stored public key are dropped
+      // outright — no TOFU fallback for unkeyed peers.  Frames from peers whose
+      // key IS stored are always verified regardless of this flag.
+      requirePeerAuth: this._requirePeerAuth,
     })
     this._signaling.addEventListener('signal', (ev) => this._onSignal(ev.detail))
     this._signaling.addEventListener('signaling-open', () => {
@@ -236,6 +249,10 @@ export class FabricClient extends EventTarget {
 
   _getOrCreatePeer(remoteId) {
     if (this._peers.has(remoteId)) return this._peers.get(remoteId)
+    if (this._peers.size >= MAX_PEERS) {
+      console.warn('[fabric] peer limit reached, dropping peer', remoteId)
+      return null
+    }
     const ps = new PeerState(remoteId)
     this._peers.set(remoteId, ps)
     return ps
@@ -244,6 +261,7 @@ export class FabricClient extends EventTarget {
   /** Initiate an offer to a remote peer (called when we see their 'join'). */
   async _initiatePeer(remoteId) {
     const ps = this._getOrCreatePeer(remoteId)
+    if (!ps) return                       // peer limit reached
     if (ps.state === 'connected') return
     ps.reset()
 
@@ -318,6 +336,10 @@ export class FabricClient extends EventTarget {
     })
 
     dc.addEventListener('message', ({ data }) => {
+      if (_byteSize(data) > MAX_PAYLOAD_BYTES) {
+        console.warn('[fabric] oversized data-channel payload from', remoteId, '— dropped')
+        return
+      }
       this.dispatchEvent(new CustomEvent('message', { detail: { from: remoteId, data } }))
     })
 
@@ -358,6 +380,7 @@ export class FabricClient extends EventTarget {
     }
 
     const ps = this._getOrCreatePeer(from)
+    if (!ps) return                       // peer limit reached
 
     if (type === 'offer') {
       ps.reset()
@@ -395,9 +418,10 @@ export class FabricClient extends EventTarget {
       if (!candidate) return
       if (ps.pc && ps.pc.remoteDescription) {
         try { await ps.pc.addIceCandidate(candidate) } catch { /* ignore stale */ }
-      } else {
+      } else if (ps.pendingCandidates.length < MAX_PENDING_CANDIDATES) {
         ps.pendingCandidates.push(candidate)
       }
+      // else: silently drop — candidates beyond the cap are best-effort anyway
     }
   }
 
@@ -455,8 +479,34 @@ export class FabricClient extends EventTarget {
       const ackIds = []
       for (const blob of blobs) {
         try {
-          const msg = JSON.parse(atob(blob.blob_b64))
+          // ── MED-DoS: relay blob size cap ────────────────────────────────────
+          const rawPayload = atob(blob.blob_b64)
+          if (rawPayload.length > MAX_PAYLOAD_BYTES) continue  // oversized → drop
+          const msg = JSON.parse(rawPayload)
           if (msg.session !== this._session) continue
+
+          // ── MED: verify relay-blob inbound signature ─────────────────────────
+          // The depositor signs { to, from, nonce, blob_b64 } (see _relayDeposit).
+          // If we hold a key for the sender (imported via signaling join / TOFU),
+          // the blob MUST carry a valid signature.  Unknown senders (no key held)
+          // are allowed through for backward compat with pre-auth relay clients.
+          if (blob.sig && blob.nonce) {
+            const sigMsg = JSON.stringify({
+              to: this._peerId,
+              from: blob.from,
+              nonce: blob.nonce,
+              blob_b64: blob.blob_b64,
+            })
+            const result = await this._signaling.verifyPeerSig(blob.from, sigMsg, blob.sig)
+            if (result === false) continue  // key held + sig invalid → tamper/impersonation
+            // result === null: no key stored → allow through (backward compat)
+          } else if (this._signaling.hasPeerKey(blob.from)) {
+            // Sender published a key via signaling but blob is unsigned.
+            // Reject: prevents server-injected blobs and pre-auth-era replays
+            // from being accepted once the sender has upgraded to signed deposits.
+            continue
+          }
+
           // ── billing meter: count inbound payload bytes ─────────────────────
           this._relayedBytesIn += _byteSize(msg.data)
           this.dispatchEvent(new CustomEvent('message', { detail: { from: blob.from, data: msg.data } }))

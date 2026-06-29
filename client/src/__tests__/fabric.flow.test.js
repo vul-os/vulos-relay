@@ -160,6 +160,9 @@ function makeFabric({ peerId = 'local-peer', authToken = null } = {}) {
     iceUrl: '/api/peering/ice',
     relayBaseUrl: '',
     authToken,
+    // Flow tests send unsigned frames to exercise ICE/SDP negotiation; peer auth
+    // itself is verified in peer-auth.test.js with proper cryptographic signing.
+    requirePeerAuth: false,
   })
   return fc
 }

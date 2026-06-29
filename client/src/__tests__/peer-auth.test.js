@@ -714,3 +714,222 @@ describe('FabricClient — outgoing signals carry signature and nonce', () => {
     fc.leave()
   })
 })
+
+// ── 6. requirePeerAuth=true (FabricClient default) ────────────────────────────
+
+describe('FabricClient — requirePeerAuth=true (default) rejects unknown peers', () => {
+  it('drops an offer from a peer with no stored key when requirePeerAuth=true (default)', async () => {
+    // makeFabric creates a FabricClient without explicit requirePeerAuth,
+    // so it defaults to true (changed from the previous hardcoded false).
+    const fc = makeFabric('bob')
+    await fc.join()
+    const ws = FakeWebSocket.last
+    ws._open()
+
+    // alice sends an unsigned offer without a prior join (no pubKey stored, no sig)
+    ws._message({
+      channel: 'signal',
+      from: 'alice',
+      payload: {
+        type: 'offer', session: 'sess-1', to: 'bob',
+        sdp: 'v=0 unsigned-from-unknown-peer',
+        // No pubKey, no nonce, no sig — unknown peer
+      },
+    })
+    await sleep(50)
+
+    // requirePeerAuth=true: no key for alice and no inline pubKey → offer is dropped
+    // at the SignalingClient layer before _onSignal is called, so no peer state is
+    // created for alice and no PC is instantiated.
+    expect(fc._peers.has('alice')).toBe(false)
+    expect(FakePC.instances.length).toBe(0)
+    fc.leave()
+  })
+
+  it('still accepts an offer carrying a valid pubKey+sig (TOFU import on first offer)', async () => {
+    // requirePeerAuth=true but the offer carries pubKey inline → TOFU import →
+    // verify sig → if valid, accept.  This is the upgrade path: on first contact
+    // the offer itself bootstraps trust.
+    const aliceKP = await generatePeerKey()
+    const alicePubKeyB64 = await exportPubKeyB64(aliceKP)
+
+    const fc = makeFabric('bob')
+    await fc.join()
+    const ws = FakeWebSocket.last
+    ws._open()
+
+    // alice sends a signed offer with her inline pubKey (no prior join needed)
+    const nonce = crypto.randomUUID()
+    const sdp = 'v=0 inline-pubkey-offer'
+    const sig = await signMsg(aliceKP.privateKey, canonical({
+      type: 'offer', session: 'sess-1', to: 'bob', from: 'alice',
+      nonce, sdp, pubKey: alicePubKeyB64,
+    }))
+
+    ws._message({
+      channel: 'signal',
+      from: 'alice',
+      payload: {
+        type: 'offer', session: 'sess-1', to: 'bob',
+        sdp, nonce, sig, pubKey: alicePubKeyB64,
+      },
+    })
+
+    // TOFU import + verify + _onSignal + setRemoteDescription are all async
+    await waitFor(() => FakePC.last?.remoteDescription?.type === 'offer')
+    expect(FakePC.last.remoteDescription.type).toBe('offer')
+    fc.leave()
+  })
+
+  it('FabricClient with explicit requirePeerAuth=false allows unsigned frames (legacy mode)', async () => {
+    // Operators who need to interoperate with pre-auth SDK peers can opt out.
+    const signals = []
+    const sc = new SignalingClient({
+      signalingUrl: 'ws://localhost/sig',
+      sessionId: 'sess-1',
+      peerId: 'bob',
+      requirePeerAuth: false,
+    })
+    sc.addEventListener('signal', ({ detail }) => signals.push(detail))
+    sc.connect()
+    const ws = FakeWebSocket.last
+    ws._open()
+
+    ws._message({
+      channel: 'signal',
+      from: 'alice',
+      payload: { type: 'offer', session: 'sess-1', to: 'bob', sdp: 'v=0 unsigned' },
+    })
+    // No WebCrypto ops on this path → a single tick is enough
+    await new Promise(r => setTimeout(r, 0))
+
+    expect(signals).toHaveLength(1)
+    expect(signals[0].payload.type).toBe('offer')
+    sc.close()
+  })
+})
+
+// ── 7. Replay protection — nonce deduplication ───────────────────────────────
+
+describe('SignalingClient — replay protection', () => {
+  it('drops a frame whose (from, nonce) pair has already been processed', async () => {
+    const aliceKP = await generatePeerKey()
+    const alicePubKeyB64 = await exportPubKeyB64(aliceKP)
+
+    const sc = new SignalingClient({
+      signalingUrl: 'ws://localhost/sig',
+      sessionId: 'sess-1',
+      peerId: 'bob',
+      requirePeerAuth: false,
+    })
+    // Track only offer/answer/ice signals — join frames are also dispatched as
+    // 'signal' events and would inflate the count if not filtered out.
+    const offerSignals = []
+    sc.addEventListener('signal', ({ detail }) => {
+      if (detail.payload.type === 'offer' || detail.payload.type === 'answer') {
+        offerSignals.push(detail)
+      }
+    })
+    sc.connect()
+
+    const ws = FakeWebSocket.last
+    ws._open()
+
+    // Register alice's key via join (this ALSO dispatches a 'signal' event, hence the filter)
+    ws._message({
+      channel: 'signal',
+      from: 'alice',
+      payload: { type: 'join', session: 'sess-1', depositPubKey: alicePubKeyB64 },
+    })
+    await waitFor(() => sc._peerKeys.has('alice'))
+
+    // Build a valid signed offer
+    const nonce = crypto.randomUUID()
+    const sdp = 'v=0 replay-test'
+    const sig = await signMsg(aliceKP.privateKey, canonical({
+      type: 'offer', session: 'sess-1', to: 'bob', from: 'alice',
+      nonce, sdp, pubKey: alicePubKeyB64,
+    }))
+
+    const frame = {
+      channel: 'signal',
+      from: 'alice',
+      payload: { type: 'offer', session: 'sess-1', to: 'bob', sdp, nonce, sig, pubKey: alicePubKeyB64 },
+    }
+
+    // First delivery — should be accepted.
+    // Poll the nonce cache directly (populated before dispatchEvent) so we know
+    // the nonce is definitely stored when we attempt the replay below.
+    ws._message(frame)
+    await waitFor(() => sc._seenNonces.size > 0, { timeout: 500 })
+    expect(offerSignals).toHaveLength(1)
+    expect(sc._seenNonces.has(`alice:${nonce}`)).toBe(true)
+
+    // Second delivery (exact replay) — must be dropped by the nonce cache.
+    ws._message(frame)
+    await sleep(100)
+    expect(offerSignals).toHaveLength(1)   // still 1; replay was silently dropped
+
+    sc.close()
+  })
+
+  it('accepts two offers with the same content but different nonces (not a replay)', async () => {
+    const aliceKP = await generatePeerKey()
+    const alicePubKeyB64 = await exportPubKeyB64(aliceKP)
+
+    const sc = new SignalingClient({
+      signalingUrl: 'ws://localhost/sig',
+      sessionId: 'sess-1',
+      peerId: 'bob',
+      requirePeerAuth: false,
+    })
+    const offerSignals = []
+    sc.addEventListener('signal', ({ detail }) => {
+      if (detail.payload.type === 'offer' || detail.payload.type === 'answer') {
+        offerSignals.push(detail)
+      }
+    })
+    sc.connect()
+
+    const ws = FakeWebSocket.last
+    ws._open()
+
+    ws._message({
+      channel: 'signal',
+      from: 'alice',
+      payload: { type: 'join', session: 'sess-1', depositPubKey: alicePubKeyB64 },
+    })
+    await waitFor(() => sc._peerKeys.has('alice'))
+
+    const sdp = 'v=0 two-offers'
+
+    // First offer with nonce-1
+    const nonce1 = crypto.randomUUID()
+    const sig1 = await signMsg(aliceKP.privateKey, canonical({
+      type: 'offer', session: 'sess-1', to: 'bob', from: 'alice',
+      nonce: nonce1, sdp, pubKey: alicePubKeyB64,
+    }))
+    ws._message({
+      channel: 'signal',
+      from: 'alice',
+      payload: { type: 'offer', session: 'sess-1', to: 'bob', sdp, nonce: nonce1, sig: sig1, pubKey: alicePubKeyB64 },
+    })
+    await waitFor(() => offerSignals.length === 1, { timeout: 500 })
+
+    // Second offer with nonce-2 — different nonce, so it is NOT a replay.
+    const nonce2 = crypto.randomUUID()
+    const sig2 = await signMsg(aliceKP.privateKey, canonical({
+      type: 'offer', session: 'sess-1', to: 'bob', from: 'alice',
+      nonce: nonce2, sdp, pubKey: alicePubKeyB64,
+    }))
+    ws._message({
+      channel: 'signal',
+      from: 'alice',
+      payload: { type: 'offer', session: 'sess-1', to: 'bob', sdp, nonce: nonce2, sig: sig2, pubKey: alicePubKeyB64 },
+    })
+    await waitFor(() => offerSignals.length === 2, { timeout: 500 })
+
+    expect(offerSignals).toHaveLength(2)
+    sc.close()
+  })
+})

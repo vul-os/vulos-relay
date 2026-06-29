@@ -82,11 +82,17 @@ const state = await bootstrapOffline({
 import { SignalingClient } from '@vulos/relay-client/signaling'
 
 const sc = new SignalingClient({
-  signalingUrl: 'wss://box.vulos.org/api/peering/stream',
-  sessionId:    'doc-abc123',
-  peerId:       'user-xyz',
-  authToken:    'eyJ...',       // optional Bearer JWT
-  maxAttempts:  10,             // optional; reconnect budget
+  signalingUrl:     'wss://box.vulos.org/api/peering/stream',
+  sessionId:        'doc-abc123',
+  peerId:           'user-xyz',
+  authToken:        'eyJ...',       // optional Bearer JWT
+  tokenTransport:   'header',       // optional; 'header' (default) or 'query'
+  maxAttempts:      10,             // optional; reconnect budget
+
+  // ── Peer-auth / frame signing (advanced) ──────────────────────────────────
+  requirePeerAuth:  true,           // default; reject unsigned frames from unknown peers
+  getDepositPubKey: () => pubKeyB64, // callback → base64 raw P-256 public key to publish in join frames
+  signFrame:        async (msg) => sigB64, // async callback → base64 ECDSA-P256/SHA-256 signature
 })
 ```
 
@@ -95,8 +101,31 @@ const sc = new SignalingClient({
 | `signalingUrl` | `string` | required | WebSocket URL to the peering stream |
 | `sessionId` | `string` | required | Fabric session / document ID |
 | `peerId` | `string` | required | This client's identity token |
-| `authToken` | `string \| null` | `null` | Bearer JWT appended as `?token=…` to the WebSocket URL |
+| `authToken` | `string \| null` | `null` | Bearer JWT for server-side session auth |
+| `tokenTransport` | `'header' \| 'query'` | `'header'` | How the auth token is sent on the WebSocket handshake. `'header'` sends it in `Sec-WebSocket-Protocol` (avoids URL logging); `'query'` appends `?token=…` for environments where custom WS headers are not supported. |
 | `maxAttempts` | `number` | `10` | Max reconnect attempts before emitting `'offline'` |
+| `requirePeerAuth` | `boolean` | `true` | When `true`, any `offer`/`answer`/`ice` frame received from a peer whose public key is not yet known (via a prior signed `join` or an inline `pubKey`) is silently dropped. Set to `false` only for legacy/test scenarios where frames are not signed. |
+| `getDepositPubKey` | `() => string \| null` | `null` | Callback returning the base64-encoded raw (uncompressed) P-256 public key to include as `depositPubKey` in the outgoing `join` frame, so remote peers can verify inbound signed frames. |
+| `signFrame` | `async (canonicalMsg: string) => string \| null` | `null` | Async callback that signs a canonical JSON string and returns a base64 ECDSA-P256/SHA-256 signature. Applied to every outgoing `offer`, `answer`, and `ice` frame. The canonical form is the JSON-serialised payload with fixed key order (`from`, `nonce`, `sdp`/`candidate`, `pubKey`). |
+
+#### Signaling-frame signing and DTLS fingerprint pinning
+
+When `signFrame` and `getDepositPubKey` are both provided, the `SignalingClient` will:
+
+1. Include `pubKey` (the raw P-256 public key, base64) in outgoing frames so the remote peer can import it on first sight (TOFU — Trust on First Use).
+2. Generate a random UUID `nonce` per frame to enable replay detection.
+3. Call `signFrame(canonical)` to sign the canonical form and attach a `sig` field.
+4. Mirror the `sdp` or `candidate` field to the top level of the payload so the DTLS fingerprint is included in the signed material — a MITM that rewrites the SDP after signing will produce a signature that fails verification.
+
+On the inbound side, `requirePeerAuth: true` causes the client to:
+- Accept `join` frames freely and import `depositPubKey` into its per-peer key registry.
+- For `offer`/`answer`/`ice` frames, verify the `sig` against the stored (or inline) `pubKey`.
+- Drop frames where no key is known and no inline `pubKey` is provided.
+- Drop frames whose `(from, nonce)` pair has already been seen in this session (bounded FIFO cache, max 1000 entries).
+
+#### Per-session nonce cache (replay protection)
+
+Each `SignalingClient` maintains an in-memory `(fromPeerId, nonce)` cache bounded to 1000 entries (eviction is FIFO). The cache is scoped to the session lifetime — it is not persisted across reconnects. Re-join after reconnect issues a fresh nonce, so cache entries from before the reconnect do not block legitimate re-negotiation.
 
 **Events:** `signaling-open`, `signaling-close`, `signal`, `offline`
 
@@ -110,12 +139,16 @@ const sc = new SignalingClient({
 import { FabricClient } from '@vulos/relay-client/fabric'
 
 const fabric = new FabricClient({
-  sessionId:    'doc-abc123',
-  peerId:       'user-xyz',
-  signalingUrl: 'wss://box.vulos.org/api/peering/stream',
-  iceUrl:       '/api/peering/ice',   // optional
-  relayBaseUrl: '',                    // optional
-  authToken:    'eyJ...',             // optional
+  sessionId:            'doc-abc123',
+  peerId:               'user-xyz',
+  signalingUrl:         'wss://box.vulos.org/api/peering/stream',
+  iceUrl:               '/api/peering/ice',   // optional
+  relayBaseUrl:         '',                   // optional
+  authToken:            'eyJ...',             // optional
+
+  // ── Security options ──────────────────────────────────────────────────────
+  requirePeerAuth:      true,   // default; require signed frames from unknown peers
+  allowUnsignedRelayAuth: false, // default; never send the forged Vulos-Relay header
 })
 ```
 
@@ -126,7 +159,34 @@ const fabric = new FabricClient({
 | `signalingUrl` | `string` | required | WebSocket URL for signaling |
 | `iceUrl` | `string` | `'/api/peering/ice'` | URL returning `{ ice_servers: [...] }` |
 | `relayBaseUrl` | `string` | `''` | Base URL for relay deposit/pickup (empty = same-origin) |
-| `authToken` | `string \| null` | `null` | Bearer JWT |
+| `authToken` | `string \| null` | `null` | Bearer JWT sent as `Authorization: Bearer …` on relay HTTP requests |
+| `requirePeerAuth` | `boolean` | `true` | Passed through to the internal `SignalingClient`. When `true`, unsigned signaling frames from peers with no stored key are dropped. Set to `false` only for backward-compat scenarios where the remote is not signing frames. |
+| `allowUnsignedRelayAuth` | `boolean` | `false` | When `false` (default), the `Vulos-Relay: <peerId>` header is never sent on relay requests — this header is server-controlled and can be forged. When `true`, the header is included for legacy relay backends that use it for identification. Requires explicit opt-in because it is not a secure authentication mechanism. |
+
+#### Per-session deposit key (ECDSA P-256)
+
+`FabricClient` generates a per-session ECDSA P-256 key pair on `join()`. The raw public key is published in the `join` signaling frame as `depositPubKey`. Every outgoing relay deposit and outgoing signaling frame (offer/answer/ice) is signed with this key so that:
+
+- Remote peers can verify inbound relay blobs using the key stored from the `join` frame.
+- The signaling server and any relay backend can verify signed deposits without trusting the client-supplied `from` field.
+
+The private key is ephemeral (in-memory only, `extractable: false`) and is discarded when the session ends.
+
+#### Relay inbound signature verification
+
+Relay blobs received during the poll loop are verified client-side before dispatch:
+
+1. If the blob carries a `sig` and `nonce`, the `SignalingClient`'s per-peer key registry is used to verify the ECDSA-P256/SHA-256 signature over `JSON.stringify({ to, from, nonce, blob_b64 })`.
+2. If no signature is present but the `from` peer's key IS known (imported from a prior signed `join`), the blob is **dropped** — a blob without a sig from a known peer is suspicious and may indicate relay-level impersonation.
+3. If no signature is present and the peer's key is NOT known (early join race or legacy peer), the blob is accepted — this preserves backward compat with unsigned relay backends.
+
+#### DoS limits (hard caps, not configurable)
+
+| Limit | Value | Description |
+|-------|-------|-------------|
+| `MAX_PENDING_CANDIDATES` | 50 | Max buffered ICE candidates per peer before the remote has set remote description |
+| `MAX_PEERS` | 50 | Max concurrent peer states per session; additional join frames are silently ignored |
+| `MAX_PAYLOAD_BYTES` | 262144 (256 KiB) | Max size for data-channel messages and relay blobs; oversized payloads are dropped |
 
 **Timing constants (not configurable):**
 

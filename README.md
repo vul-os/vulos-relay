@@ -76,11 +76,13 @@ backend that implements the peering contract and it works on its own.
   live connection fails), the SDK transparently switches that peer to a **relay
   circuit**: messages are deposited and picked up over the host's
   `deposit` / `pickup` / `ack` HTTP API.
-- **Signed deposits** — each peer mints a per-session **ECDSA P-256** key on
-  join, publishes the raw public key in its signaling join frame (bound
-  server-side to the authenticated `peerId`), and signs every relay deposit
-  (`to` + `from` + `nonce` + `blob`) so a correctly configured relay can reject
-  forged payloads.
+- **E2E peer authentication** — each peer mints a per-session **ECDSA P-256**
+  key on join, publishes the raw public key in its signaling `join` frame, and
+  signs every outgoing `offer`/`answer`/`ice` frame and every relay deposit
+  (`to` + `from` + `nonce` + `blob`). The receiving client verifies signatures
+  and enforces a signed-timestamp / nonce replay cache before processing any
+  frame (`requirePeerAuth: true` by default). The `sdp` field is included in
+  the signed material for client-side DTLS fingerprint pinning.
 - **Endpoint failover** — `selectEndpoint()` health-probes a cloud and a LAN
   base URL concurrently, prefers LAN-direct for latency, falls back to cloud,
   then same-origin. A 400 ms debounce coalesces Wi-Fi-handoff bursts; failures
@@ -329,12 +331,48 @@ git tag v1.2.3 && git push origin v1.2.3
 
 ## Security
 
-Found a vulnerability? Please follow the disclosure process in
-[SECURITY.md](SECURITY.md) — report via GitHub Security Advisories (preferred) or
+### Peer authentication and frame signing
+
+Every `FabricClient` session generates an ephemeral **ECDSA P-256** key pair.
+The public key is published in the signaling `join` frame (`depositPubKey`) and
+every outgoing `offer`, `answer`, and `ice` frame is signed over its canonical
+JSON form (fixed key order: `from`, `nonce`, `sdp`/`candidate`, `pubKey`).
+
+By default (`requirePeerAuth: true`), the SDK **rejects unsigned frames** from
+peers whose key it has not yet imported. A peer that joins with a signed frame
+carrying an inline `pubKey` is accepted (TOFU — Trust on First Use); subsequent
+frames must be signed with the same key. Frames whose `(from, nonce)` pair has
+already been seen are silently dropped (bounded per-session replay cache, 1000
+entries, FIFO eviction).
+
+The `sdp` field is mirrored into the signed payload so a MITM that rewrites the
+SDP (and its DTLS fingerprint) after the sender has signed it will produce a
+signature that fails verification — providing a client-side DTLS fingerprint
+pinning guarantee independent of the signaling transport.
+
+Relay blobs are verified the same way: each deposit carries `{ to, from, nonce,
+blob_b64 }` in the signed material, and a blob arriving without a signature from
+a peer whose key is known is dropped.
+
+To opt out of peer auth for legacy deployments (e.g. where the remote peer does
+not sign frames), pass `requirePeerAuth: false` to `FabricClient`. For the call
+path (`networkSession` in `@vulos/relay-client/call`), per-session signing is
+wired automatically with `requirePeerAuth: false` on the call signaling client —
+call peers rely on DTLS-SRTP for media security while the signaling data is still
+signed.
+
+The `Vulos-Relay: <peerId>` header is not sent unless you explicitly pass
+`allowUnsignedRelayAuth: true` — this header can be forged by any client and is
+not a security mechanism.
+
+### Vulnerability disclosure
+
+Found a vulnerability? Report via GitHub Security Advisories (preferred) or
 `security@vulos.org`. In-scope areas include endpoint probe/cache integrity,
-signaling session isolation, auth-token handling, and relay/offline-queue
-integrity. Acknowledgement within 72 hours; confirmed reporters are credited in
-release notes.
+signaling session isolation, peer-auth bypass, auth-token handling, and
+relay/offline-queue integrity. Acknowledgement within 72 hours; confirmed
+reporters are credited in release notes. See [SECURITY.md](SECURITY.md) for the
+full policy.
 
 ---
 

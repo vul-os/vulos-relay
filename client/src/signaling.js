@@ -63,6 +63,11 @@ const RECONNECT_MAX_MS = 30_000
 const RECONNECT_MAX_ATTEMPTS = 10  // after this many failures emit 'offline'
 const SIGNAL_CHANNEL = 'signal'
 
+// Maximum seen-(from,nonce) entries across all peers (FIFO eviction at cap).
+// 1 000 entries accommodate ≥ 16 concurrent peers each sending ~60 signed
+// frames before the oldest entries are evicted.
+const NONCE_CACHE_MAX = 1_000
+
 // Prefix for carrying the auth JWT as a WebSocket subprotocol token. The full
 // JWT is base64url (chars A-Za-z0-9-_ plus '.' segment separators) and unpadded,
 // so `vula.token.<jwt>` is a valid RFC 6455 / RFC 7230 subprotocol token.
@@ -167,6 +172,15 @@ export class SignalingClient extends EventTarget {
     // First key seen wins; subsequent different keys for the same peer are ignored.
     /** @type {Map<string, CryptoKey>} */
     this._peerKeys = new Map()
+
+    // ── Replay protection: bounded seen-(from,nonce) cache ───────────────────
+    // Stores composite keys "<from>:<nonce>" for every successfully-verified
+    // signed frame.  FIFO eviction when the Map exceeds NONCE_CACHE_MAX entries
+    // (Map preserves insertion order; keys().next().value is the oldest entry).
+    // Only populated after a successful signature check — unsigned frames on the
+    // requirePeerAuth=false path are not cached, avoiding cache poisoning.
+    /** @type {Map<string, true>} */
+    this._seenNonces = new Map()
   }
 
   /** Connect (or reconnect) to the signaling WebSocket. */
@@ -267,6 +281,19 @@ export class SignalingClient extends EventTarget {
             // swap.  Drop silently to avoid leaking verification timing.
             return
           }
+          // ── Replay protection ────────────────────────────────────────────────
+          // A replayed frame has a valid signature but a nonce we have already
+          // processed.  Check after verification so we only track nonces for
+          // authenticated peers and never poison the cache on the unsigned path.
+          const _nonceKey = `${senderPeerId}:${p.nonce}`
+          if (this._seenNonces.has(_nonceKey)) {
+            return  // replay — silently drop
+          }
+          // FIFO eviction: oldest entry is keys().next().value in insertion order
+          if (this._seenNonces.size >= NONCE_CACHE_MAX) {
+            this._seenNonces.delete(this._seenNonces.keys().next().value)
+          }
+          this._seenNonces.set(_nonceKey, true)
         } else if (this._requirePeerAuth) {
           // requirePeerAuth=true but no key available for this peer.  Drop to
           // prevent a server from injecting frames for a peer that hasn't
@@ -334,6 +361,39 @@ export class SignalingClient extends EventTarget {
       this._ws.close()
       this._ws = null
     }
+  }
+
+  // ─── public peer-key helpers (used by FabricClient for relay-blob auth) ────
+
+  /**
+   * Return true when a public key has been stored for `fromPeerId` (via a
+   * 'join' frame or TOFU import on an offer/answer).
+   *
+   * Used by FabricClient to decide whether to enforce a relay-blob signature.
+   *
+   * @param {string} fromPeerId
+   * @returns {boolean}
+   */
+  hasPeerKey(fromPeerId) {
+    return this._peerKeys.has(fromPeerId)
+  }
+
+  /**
+   * Verify a relay-deposit blob signature using the stored public key for
+   * `fromPeerId` (populated via signaling join / TOFU).
+   *
+   * @param {string} fromPeerId
+   * @param {string} message   — the exact canonical string that was signed
+   * @param {string} sigB64    — base64 ECDSA P-256 DER signature
+   * @returns {Promise<boolean|null>}
+   *   true  — valid signature
+   *   false — invalid signature (impersonation / tamper → drop blob)
+   *   null  — no key stored for this peer (caller applies its own policy)
+   */
+  async verifyPeerSig(fromPeerId, message, sigB64) {
+    const key = this._peerKeys.get(fromPeerId)
+    if (!key) return null
+    return this._verifyFrame(key, message, sigB64)
   }
 
   // ─── private ───────────────────────────────────────────────────────────────

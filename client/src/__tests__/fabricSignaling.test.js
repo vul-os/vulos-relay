@@ -253,3 +253,135 @@ describe('joinSignalingSession — transport selection', () => {
     globalThis.BroadcastChannel = origBC
   })
 })
+
+// ── Call-path signing (HIGH audit fix #2) ─────────────────────────────────────
+
+describe('networkSession (call path) — E2E identity binding + DTLS pinning', () => {
+  let origWS
+  let origBC
+
+  beforeEach(() => {
+    origWS = globalThis.WebSocket
+    origBC = globalThis.BroadcastChannel
+    FakeWebSocket.lastInstance = null
+    if (typeof window !== 'undefined') {
+      window.__VULOS_ENDPOINTS__ = { signalingUrl: 'ws://localhost:9999/api/peering/stream' }
+    }
+    globalThis.WebSocket = FakeWebSocket
+  })
+
+  afterEach(() => {
+    globalThis.WebSocket = origWS
+    globalThis.BroadcastChannel = origBC
+    if (typeof window !== 'undefined') delete window.__VULOS_ENDPOINTS__
+    vi.restoreAllMocks()
+  })
+
+  it('publishes a depositPubKey in the join frame (per-session ECDSA key)', async () => {
+    const { joinSignalingSession } = await freshFabricSignaling()
+    const session = await joinSignalingSession('room-sign', { peerId: 'caller' })
+    const ws = FakeWebSocket.lastInstance
+
+    // SignalingClient._send() checks this._ws.readyState !== WebSocket.OPEN before
+    // sending; we must set readyState = OPEN before firing 'open' so _send works.
+    ws.readyState = FakeWebSocket.OPEN
+    ws._fire('open', {})
+    // Allow the async signFrame (sign 'join' via WebCrypto threadpool) to complete
+    await new Promise(r => setTimeout(r, 30))
+
+    // The join frame must carry a non-null depositPubKey.
+    // SignalingClient sends the initial join via _send (synchronous, no signing)
+    // and networkSession sends a second join via sc.signal (signed, async).
+    // Either may carry depositPubKey; find the one that does.
+    const joinRaw = ws.send.mock.calls.find(([raw]) => {
+      try { return JSON.parse(raw).payload?.depositPubKey != null } catch { return false }
+    })
+    expect(joinRaw).toBeTruthy()
+    const joinFrame = JSON.parse(joinRaw[0])
+    expect(typeof joinFrame.payload.depositPubKey).toBe('string')
+    expect(joinFrame.payload.depositPubKey.length).toBeGreaterThan(0)
+
+    session.close()
+  })
+
+  it('outgoing send() includes pubKey and sig on the WS frame', async () => {
+    const { joinSignalingSession } = await freshFabricSignaling()
+    const session = await joinSignalingSession('room-sign2', { peerId: 'caller' })
+    const ws = FakeWebSocket.lastInstance
+    ws.readyState = FakeWebSocket.OPEN
+    ws._fire('open', {})
+
+    // Allow join signing to complete, then clear so only the sdp frame is visible
+    await new Promise(r => setTimeout(r, 30))
+    ws.send.mockClear()
+
+    // Call layer sends an sdp message
+    session.send({
+      kind: 'sdp',
+      to: 'remote-peer',
+      data: { type: 'offer', sdp: 'v=0 call-offer' },
+    })
+
+    // signFrame is async (WebCrypto) — wait for the signed frame to land
+    await new Promise(r => setTimeout(r, 30))
+
+    expect(ws.send).toHaveBeenCalled()
+    const raw = ws.send.mock.calls[ws.send.mock.calls.length - 1][0]
+    const frame = JSON.parse(raw)
+    const p = frame.payload
+
+    // Must carry a nonce and signature (signed frame)
+    expect(typeof p.nonce).toBe('string')
+    expect(typeof p.sig).toBe('string')
+    expect(p.sig.length).toBeGreaterThan(0)
+    // Must publish the session pubkey
+    expect(typeof p.pubKey).toBe('string')
+    expect(p.pubKey.length).toBeGreaterThan(0)
+    // SDP mirrored to top level for DTLS fingerprint pinning
+    expect(p.sdp).toBe('v=0 call-offer')
+
+    session.close()
+  })
+
+  it('outgoing offer signature verifies against the session pubkey', async () => {
+    const { joinSignalingSession } = await freshFabricSignaling()
+    const session = await joinSignalingSession('room-sign3', { peerId: 'caller' })
+    const ws = FakeWebSocket.lastInstance
+    ws.readyState = FakeWebSocket.OPEN
+    ws._fire('open', {})
+    await new Promise(r => setTimeout(r, 30))
+    ws.send.mockClear()
+
+    const testSdp = 'v=0\r\na=fingerprint:sha-256 AA:BB:CC:DD:EE:FF'
+    session.send({ kind: 'sdp', to: 'remote', data: { type: 'offer', sdp: testSdp } })
+    await new Promise(r => setTimeout(r, 30))
+
+    const raw = ws.send.mock.calls[ws.send.mock.calls.length - 1][0]
+    const { payload: p } = JSON.parse(raw)
+
+    // Import the session pubkey from the frame
+    const rawPub = Uint8Array.from(atob(p.pubKey), c => c.charCodeAt(0))
+    const verifyKey = await crypto.subtle.importKey(
+      'raw', rawPub, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify'],
+    )
+
+    // Reconstruct the exact canonical message that was signed
+    const canonicalMsg = JSON.stringify({
+      type: p.type,
+      session: 'room-sign3',
+      to: 'remote',
+      from: 'caller',
+      nonce: p.nonce,
+      sdp: p.sdp,
+      pubKey: p.pubKey,
+    })
+    const sigBuf = Uint8Array.from(atob(p.sig), c => c.charCodeAt(0))
+    const msgBuf = new TextEncoder().encode(canonicalMsg)
+    const valid = await crypto.subtle.verify(
+      { name: 'ECDSA', hash: 'SHA-256' }, verifyKey, sigBuf, msgBuf,
+    )
+
+    expect(valid).toBe(true)
+    session.close()
+  })
+})

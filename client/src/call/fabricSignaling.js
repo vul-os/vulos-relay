@@ -82,9 +82,9 @@ function _resolveSignalingUrl() {
  * @param {string} sessionId
  * @param {object|null} identity
  * @param {string} signalingUrl
- * @returns {object} session
+ * @returns {Promise<object>} session
  */
-function networkSession(sessionId, identity, signalingUrl) {
+async function networkSession(sessionId, identity, signalingUrl) {
   const em = new Emitter()
   const peerId = _newPeerId(identity)
   const peers = new Set()
@@ -92,11 +92,61 @@ function networkSession(sessionId, identity, signalingUrl) {
 
   const setState = (s) => { state = s; em.emit('state', s) }
 
+  // ── Per-session ECDSA P-256 signing key ─────────────────────────────────────
+  // Generate a non-extractable private key for signing outgoing signaling frames.
+  // The corresponding public key is published in the 'join' frame (depositPubKey)
+  // and embedded in every offer/answer frame (pubKey), enabling peers to perform
+  // TOFU import and verify subsequent frames, achieving:
+  //
+  //   • PEER IDENTITY BINDING — including `from` in the canonical message means
+  //     a server that stamps the wrong `from` breaks verification.
+  //   • DTLS FINGERPRINT PINNING — including `sdp` in the canonical message pins
+  //     the DTLS fingerprint so a MITM cannot replace the SDP after signing.
+  //
+  // Falls back to unsigned signaling when WebCrypto is unavailable (non-secure
+  // context, very old browser).  Peers with requirePeerAuth=false (the default
+  // for the call path) will still accept unsigned frames.
+  let _sessionKeyPair = null
+  let _sessionPubKeyB64 = null
+  try {
+    _sessionKeyPair = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,          // private key non-extractable
+      ['sign', 'verify'],
+    )
+    const rawPub = await crypto.subtle.exportKey('raw', _sessionKeyPair.publicKey)
+    _sessionPubKeyB64 = btoa(String.fromCharCode(...new Uint8Array(rawPub)))
+  } catch (err) {
+    // WebCrypto unavailable — outgoing frames will be unsigned.
+    // Peers whose keys are already stored will drop our frames; peers with
+    // requirePeerAuth=false (including all call-path sessions) will accept them.
+    console.warn('[fabricSignaling] WebCrypto unavailable; frames will be unsigned:', err.message)
+  }
+
   const sc = new SignalingClient({
     signalingUrl,
     sessionId,
     peerId,
     authToken: identity?.authToken || null,
+    // Publish the per-session signing public key in the 'join' frame so peers
+    // can TOFU-import it and verify subsequent offer/answer/ice frames from us.
+    getDepositPubKey: () => _sessionPubKeyB64,
+    // Sign every outgoing offer/answer/ice frame.  Including the SDP in the
+    // canonical message (for sdp-kind frames) pins the DTLS fingerprint.
+    signFrame: _sessionKeyPair
+      ? async (msg) => {
+          const sigBuf = await crypto.subtle.sign(
+            { name: 'ECDSA', hash: 'SHA-256' },
+            _sessionKeyPair.privateKey,
+            new TextEncoder().encode(msg),
+          )
+          return btoa(String.fromCharCode(...new Uint8Array(sigBuf)))
+        }
+      : null,
+    // requirePeerAuth=false: the call layer accepts unsigned frames from peers
+    // that have not yet adopted the signed protocol.  Peers whose keys ARE
+    // stored are always verified regardless of this flag.
+    requirePeerAuth: false,
   })
 
   // Bridge SignalingClient EventTarget events to the Emitter interface.
@@ -150,13 +200,26 @@ function networkSession(sessionId, identity, signalingUrl) {
     /**
      * Send a signaling message to a specific peer (or broadcast when to is
      * omitted). The call layer passes { kind, to?, data, identity? }.
+     *
+     * When the per-session signing key is available, sdp and candidate fields
+     * are mirrored to the SignalingClient payload top level so _canonical() can
+     * include them in the signed message.  This pins the DTLS fingerprint for
+     * sdp-kind frames and binds ICE candidates to the per-session identity.
+     * The nested `data` object is preserved unchanged for the receiving call layer.
+     *
      * @param {{ kind: string, to?: string, data?: object, identity?: object }} msg
      */
     send(msg) {
-      sc.signal(msg.kind, msg.to || null, {
-        data: msg.data,
-        identity: msg.identity,
-      })
+      const extra = { data: msg.data, identity: msg.identity }
+      if (_sessionPubKeyB64) {
+        // Publish our pubkey in every frame so late-joining peers can TOFU-import
+        // it from the first offer/answer they receive (handles out-of-order delivery).
+        extra.pubKey = _sessionPubKeyB64
+        // Mirror payload fields so the signed canonical message covers them.
+        if (msg.data?.sdp)       extra.sdp       = msg.data.sdp
+        if (msg.data?.candidate) extra.candidate  = msg.data.candidate
+      }
+      sc.signal(msg.kind, msg.to || null, extra)
     },
 
     on: em.on.bind(em),
