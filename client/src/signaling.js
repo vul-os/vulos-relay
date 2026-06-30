@@ -15,6 +15,7 @@
  *     sdp: <string>,         // offer / answer
  *     candidate: <RTCIceCandidateInit>,
  *     nonce: <uuid>,         // replay-protection nonce (required when sig present)
+ *     ts: <number>,          // signed epoch-ms timestamp (required when sig present)
  *     sig: <base64>,         // ECDSA P-256 signature over canonical payload
  *     pubKey: <base64>,      // sender's raw ECDSA public key (offer/answer only)
  *   }
@@ -68,6 +69,16 @@ const SIGNAL_CHANNEL = 'signal'
 // frames before the oldest entries are evicted.
 const NONCE_CACHE_MAX = 1_000
 
+// ─── Replay freshness window ────────────────────────────────────────────────
+// A signed frame carries a signed `ts` (epoch ms).  Frames whose timestamp is
+// older than MAX_FRAME_AGE_MS, or further in the future than MAX_CLOCK_SKEW_MS,
+// are rejected.  This bounds the validity of a captured signed offer/answer/ice
+// frame to a small window — without it a captured frame stays valid forever and
+// becomes replayable again once its nonce is evicted from the FIFO cache.  The
+// nonce cache remains as defense-in-depth against replays inside the window.
+const MAX_FRAME_AGE_MS = 30_000
+const MAX_CLOCK_SKEW_MS = 5_000
+
 // Prefix for carrying the auth JWT as a WebSocket subprotocol token. The full
 // JWT is base64url (chars A-Za-z0-9-_ plus '.' segment separators) and unpadded,
 // so `vula.token.<jwt>` is a valid RFC 6455 / RFC 7230 subprotocol token.
@@ -98,11 +109,13 @@ const TOKEN_SUBPROTOCOL_PREFIX = 'vula.token.'
 // Field insertion order is fixed so sender and receiver produce identical JSON.
 // The `from` field is included so a server that stamps the wrong `from` causes
 // a canonical-message mismatch and the signature to not verify.
+// The `ts` field (epoch ms) is included so the signature also authenticates the
+// frame's timestamp, enabling staleness rejection (a tampered ts breaks the sig).
 // For offer/answer, including `sdp` also pins the DTLS fingerprint.
 //
 // @internal — exported only for tests via peer-auth.test.js which re-implements it.
-function _canonical({ type, session, to, from, nonce, sdp, candidate, pubKey }) {
-  const msg = { type, session, to: to ?? null, from, nonce }
+function _canonical({ type, session, to, from, nonce, ts, sdp, candidate, pubKey }) {
+  const msg = { type, session, to: to ?? null, from, nonce, ts }
   if (sdp !== undefined) msg.sdp = sdp
   if (candidate !== undefined) msg.candidate = candidate
   if (pubKey !== undefined) msg.pubKey = pubKey
@@ -128,6 +141,13 @@ export class SignalingClient extends EventTarget {
    *          public key. When it returns a non-null value, the key is published
    *          in the "join" frame so the server can bind it to the authenticated
    *          peerId and verify deposit signatures.
+   * @param {() => (string|null)} [opts.getBoxPubKey]
+   *        - optional callback returning this peer's base64 raw X25519 box
+   *          (encryption) public key. When non-null it is published in the
+   *          "join" frame as `boxPubKey` and stored TOFU by receivers so they
+   *          can encrypt relay-fallback payloads to this peer end-to-end (the
+   *          relay server never sees the box private key, so it cannot read the
+   *          relayed content). Mirrors the depositPubKey exchange.
    * @param {((msg: string) => Promise<string>)|null} [opts.signFrame]
    *        - optional async callback that signs a canonical string and returns a
    *          base64 ECDSA signature. When provided, all outgoing offer/answer/ice
@@ -146,6 +166,7 @@ export class SignalingClient extends EventTarget {
     tokenTransport = 'subprotocol',
     maxAttempts = RECONNECT_MAX_ATTEMPTS,
     getDepositPubKey = null,
+    getBoxPubKey = null,
     signFrame = null,
     requirePeerAuth = false,
   }) {
@@ -156,6 +177,7 @@ export class SignalingClient extends EventTarget {
     this._authToken = authToken
     this._tokenTransport = tokenTransport === 'query' ? 'query' : 'subprotocol'
     this._getDepositPubKey = getDepositPubKey
+    this._getBoxPubKey = getBoxPubKey
     this._signFrame = signFrame
     this._requirePeerAuth = requirePeerAuth
     this._ws = null
@@ -172,6 +194,13 @@ export class SignalingClient extends EventTarget {
     // First key seen wins; subsequent different keys for the same peer are ignored.
     /** @type {Map<string, CryptoKey>} */
     this._peerKeys = new Map()
+
+    // ── E2E peer box-key registry (TOFU) ─────────────────────────────────────
+    // Maps peerId → base64 raw X25519 public key, announced via the peer's
+    // 'join' frame (boxPubKey).  Used by FabricClient to encrypt relay-fallback
+    // payloads to the peer.  First key seen wins (same TOFU model as _peerKeys).
+    /** @type {Map<string, string>} */
+    this._peerBoxKeys = new Map()
 
     // ── Replay protection: bounded seen-(from,nonce) cache ───────────────────
     // Stores composite keys "<from>:<nonce>" for every successfully-verified
@@ -210,6 +239,8 @@ export class SignalingClient extends EventTarget {
       const join = { type: 'join', session: this._session }
       const depositPubKey = this._getDepositPubKey?.()
       if (depositPubKey) join.depositPubKey = depositPubKey
+      const boxPubKey = this._getBoxPubKey?.()
+      if (boxPubKey) join.boxPubKey = boxPubKey
       this._send(join)
     })
 
@@ -238,6 +269,16 @@ export class SignalingClient extends EventTarget {
         }
       }
 
+      // ── TOFU box-key import on 'join' ───────────────────────────────────────
+      // Store the peer's X25519 encryption public key so FabricClient can seal
+      // relay-fallback payloads to it.  First key wins (same TOFU model as
+      // depositPubKey); a later differing key from a dishonest server is ignored.
+      if (p.type === 'join' && p.boxPubKey) {
+        if (!this._peerBoxKeys.has(senderPeerId)) {
+          this._peerBoxKeys.set(senderPeerId, p.boxPubKey)
+        }
+      }
+
       // ── Signature verification for offer / answer / ice ─────────────────────
       // These frame types carry signed payloads when the sender uses signFrame.
       // Verification uses the stored pubkey for the server-stamped `from`.
@@ -261,8 +302,11 @@ export class SignalingClient extends EventTarget {
           // Unsigned frames (no sig/nonce) from a known peer are rejected:
           // they indicate either a replay of an old pre-auth frame or a server
           // injecting an unsigned frame under a previously-trusted identity.
-          if (!p.sig || !p.nonce) {
-            // Drop: unsigned frame from a peer whose key we hold.
+          if (!p.sig || !p.nonce || typeof p.ts !== 'number') {
+            // Drop: unsigned or un-timestamped frame from a peer whose key we
+            // hold.  A signed frame MUST carry both a nonce and a signed ts so
+            // it can be freshness-checked; absence indicates a pre-fix replay or
+            // a server injecting a frame under a previously-trusted identity.
             return
           }
           const canonical = _canonical({
@@ -271,6 +315,7 @@ export class SignalingClient extends EventTarget {
             to: p.to,
             from: senderPeerId,
             nonce: p.nonce,
+            ts: p.ts,
             sdp: p.sdp,
             candidate: p.candidate,
             pubKey: p.pubKey,
@@ -278,8 +323,17 @@ export class SignalingClient extends EventTarget {
           const valid = await this._verifyFrame(verifyKey, canonical, p.sig)
           if (!valid) {
             // Signature mismatch — impersonation attempt or MITM SDP/candidate
-            // swap.  Drop silently to avoid leaking verification timing.
+            // swap (or a tampered ts).  Drop silently to avoid leaking timing.
             return
+          }
+          // ── Freshness check (replay window) ──────────────────────────────────
+          // The ts is now authenticated by the verified signature, so we can
+          // trust it.  Reject frames outside the bounded clock-skew window: a
+          // captured frame replayed later than MAX_FRAME_AGE_MS is dropped here
+          // even if its nonce has since been evicted from the FIFO cache.
+          const _now = Date.now()
+          if (p.ts > _now + MAX_CLOCK_SKEW_MS || _now - p.ts > MAX_FRAME_AGE_MS) {
+            return  // stale or implausibly-future frame — drop
           }
           // ── Replay protection ────────────────────────────────────────────────
           // A replayed frame has a valid signature but a nonce we have already
@@ -332,10 +386,13 @@ export class SignalingClient extends EventTarget {
 
     if (this._signFrame) {
       const nonce = crypto.randomUUID()
+      const ts = Date.now()
       payload.nonce = nonce
+      payload.ts = ts
       // Build canonical message — field order is fixed (see _canonical).
       // Including `from` binds the sender's identity: a server that stamps the
       // wrong `from` causes the receiver's canonical reconstruction to differ.
+      // Including `ts` lets the receiver reject stale (captured) frames.
       // Including `sdp` (for offer/answer) pins the DTLS fingerprint.
       const canonical = _canonical({
         type,
@@ -343,6 +400,7 @@ export class SignalingClient extends EventTarget {
         to: toId,
         from: this._peerId,
         nonce,
+        ts,
         sdp: data.sdp,
         candidate: data.candidate,
         pubKey: data.pubKey,
@@ -376,6 +434,19 @@ export class SignalingClient extends EventTarget {
    */
   hasPeerKey(fromPeerId) {
     return this._peerKeys.has(fromPeerId)
+  }
+
+  /**
+   * Return the stored base64 X25519 box (encryption) public key for `peerId`,
+   * announced in that peer's 'join' frame, or null if none is known yet.
+   *
+   * Used by FabricClient to seal relay-fallback payloads end-to-end.
+   *
+   * @param {string} peerId
+   * @returns {string|null}
+   */
+  getPeerBoxKey(peerId) {
+    return this._peerBoxKeys.get(peerId) ?? null
   }
 
   /**

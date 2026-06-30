@@ -372,6 +372,7 @@ describe('networkSession (call path) — E2E identity binding + DTLS pinning', (
       to: 'remote',
       from: 'caller',
       nonce: p.nonce,
+      ts: p.ts,
       sdp: p.sdp,
       pubKey: p.pubKey,
     })

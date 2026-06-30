@@ -47,8 +47,8 @@ import { SignalingClient } from '../signaling.js'
 // ── Canonical message helper (must match signaling.js _canonical exactly) ─────
 // Re-implemented here so the test can construct the exact string that was signed
 // by the sender, and then tamper with specific fields for negative test cases.
-function canonical({ type, session, to, from, nonce, sdp, candidate, pubKey }) {
-  const msg = { type, session, to: to ?? null, from, nonce }
+function canonical({ type, session, to, from, nonce, ts, sdp, candidate, pubKey }) {
+  const msg = { type, session, to: to ?? null, from, nonce, ts }
   if (sdp !== undefined) msg.sdp = sdp
   if (candidate !== undefined) msg.candidate = candidate
   if (pubKey !== undefined) msg.pubKey = pubKey
@@ -422,17 +422,18 @@ describe('Peer authentication — valid signed offer accepted', () => {
 
     // Alice sends a valid signed offer
     const nonce = crypto.randomUUID()
+    const ts = Date.now()
     const sdp = 'v=0 valid-offer'
     const aliceCanonical = canonical({
       type: 'offer', session: 'sess-1', to: 'bob', from: 'alice',
-      nonce, sdp, pubKey: alicePubKeyB64,
+      nonce, ts, sdp, pubKey: alicePubKeyB64,
     })
     const sig = await signMsg(aliceKP.privateKey, aliceCanonical)
 
     ws._message({
       channel: 'signal',
       from: 'alice',
-      payload: { type: 'offer', session: 'sess-1', to: 'bob', sdp, nonce, sig, pubKey: alicePubKeyB64 },
+      payload: { type: 'offer', session: 'sess-1', to: 'bob', sdp, nonce, ts, sig, pubKey: alicePubKeyB64 },
     })
 
     // When the offer is accepted, _onSignal calls setRemoteDescription(offer).
@@ -457,17 +458,18 @@ describe('Peer authentication — valid signed offer accepted', () => {
     // No prior join for alice — key will be imported from the offer's pubKey field
 
     const nonce = crypto.randomUUID()
+    const ts = Date.now()
     const sdp = 'v=0 first-offer-no-join'
     const aliceCanonical = canonical({
       type: 'offer', session: 'sess-1', to: 'bob', from: 'alice',
-      nonce, sdp, pubKey: alicePubKeyB64,
+      nonce, ts, sdp, pubKey: alicePubKeyB64,
     })
     const sig = await signMsg(aliceKP.privateKey, aliceCanonical)
 
     ws._message({
       channel: 'signal',
       from: 'alice',
-      payload: { type: 'offer', session: 'sess-1', to: 'bob', sdp, nonce, sig, pubKey: alicePubKeyB64 },
+      payload: { type: 'offer', session: 'sess-1', to: 'bob', sdp, nonce, ts, sig, pubKey: alicePubKeyB64 },
     })
 
     // importKey + verify + _onSignal + setRemoteDescription all run via crypto
@@ -565,6 +567,9 @@ describe('FabricClient — unsigned relay-auth fallback disabled by default', ()
     })
 
     await fc._ensureDepositKey()
+    // Register a recipient box key so the deposit is not skipped (fail-closed
+    // E2E path requires the peer's X25519 key to encrypt to).
+    fc._signaling._peerBoxKeys.set('remote', fc._boxPubKeyB64)
     await fc._relayDeposit('remote', 'hello')
 
     // No JWT → no Authorization header on deposit either
@@ -697,6 +702,7 @@ describe('FabricClient — outgoing signals carry signature and nonce', () => {
       to: 'z-remote',
       from: 'a-local',
       nonce: p.nonce,
+      ts: p.ts,
       sdp: p.sdp,
       pubKey: p.pubKey,
     })
@@ -760,10 +766,11 @@ describe('FabricClient — requirePeerAuth=true (default) rejects unknown peers'
 
     // alice sends a signed offer with her inline pubKey (no prior join needed)
     const nonce = crypto.randomUUID()
+    const ts = Date.now()
     const sdp = 'v=0 inline-pubkey-offer'
     const sig = await signMsg(aliceKP.privateKey, canonical({
       type: 'offer', session: 'sess-1', to: 'bob', from: 'alice',
-      nonce, sdp, pubKey: alicePubKeyB64,
+      nonce, ts, sdp, pubKey: alicePubKeyB64,
     }))
 
     ws._message({
@@ -771,7 +778,7 @@ describe('FabricClient — requirePeerAuth=true (default) rejects unknown peers'
       from: 'alice',
       payload: {
         type: 'offer', session: 'sess-1', to: 'bob',
-        sdp, nonce, sig, pubKey: alicePubKeyB64,
+        sdp, nonce, ts, sig, pubKey: alicePubKeyB64,
       },
     })
 
@@ -845,16 +852,17 @@ describe('SignalingClient — replay protection', () => {
 
     // Build a valid signed offer
     const nonce = crypto.randomUUID()
+    const ts = Date.now()
     const sdp = 'v=0 replay-test'
     const sig = await signMsg(aliceKP.privateKey, canonical({
       type: 'offer', session: 'sess-1', to: 'bob', from: 'alice',
-      nonce, sdp, pubKey: alicePubKeyB64,
+      nonce, ts, sdp, pubKey: alicePubKeyB64,
     }))
 
     const frame = {
       channel: 'signal',
       from: 'alice',
-      payload: { type: 'offer', session: 'sess-1', to: 'bob', sdp, nonce, sig, pubKey: alicePubKeyB64 },
+      payload: { type: 'offer', session: 'sess-1', to: 'bob', sdp, nonce, ts, sig, pubKey: alicePubKeyB64 },
     }
 
     // First delivery — should be accepted.
@@ -905,27 +913,29 @@ describe('SignalingClient — replay protection', () => {
 
     // First offer with nonce-1
     const nonce1 = crypto.randomUUID()
+    const ts1 = Date.now()
     const sig1 = await signMsg(aliceKP.privateKey, canonical({
       type: 'offer', session: 'sess-1', to: 'bob', from: 'alice',
-      nonce: nonce1, sdp, pubKey: alicePubKeyB64,
+      nonce: nonce1, ts: ts1, sdp, pubKey: alicePubKeyB64,
     }))
     ws._message({
       channel: 'signal',
       from: 'alice',
-      payload: { type: 'offer', session: 'sess-1', to: 'bob', sdp, nonce: nonce1, sig: sig1, pubKey: alicePubKeyB64 },
+      payload: { type: 'offer', session: 'sess-1', to: 'bob', sdp, nonce: nonce1, ts: ts1, sig: sig1, pubKey: alicePubKeyB64 },
     })
     await waitFor(() => offerSignals.length === 1, { timeout: 500 })
 
     // Second offer with nonce-2 — different nonce, so it is NOT a replay.
     const nonce2 = crypto.randomUUID()
+    const ts2 = Date.now()
     const sig2 = await signMsg(aliceKP.privateKey, canonical({
       type: 'offer', session: 'sess-1', to: 'bob', from: 'alice',
-      nonce: nonce2, sdp, pubKey: alicePubKeyB64,
+      nonce: nonce2, ts: ts2, sdp, pubKey: alicePubKeyB64,
     }))
     ws._message({
       channel: 'signal',
       from: 'alice',
-      payload: { type: 'offer', session: 'sess-1', to: 'bob', sdp, nonce: nonce2, sig: sig2, pubKey: alicePubKeyB64 },
+      payload: { type: 'offer', session: 'sess-1', to: 'bob', sdp, nonce: nonce2, ts: ts2, sig: sig2, pubKey: alicePubKeyB64 },
     })
     await waitFor(() => offerSignals.length === 2, { timeout: 500 })
 
