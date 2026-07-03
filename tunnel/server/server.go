@@ -56,6 +56,17 @@ type Config struct {
 	MaxRequestBytes    int64         // request body size cap
 	IdleTimeout        time.Duration // control-conn idle timeout / keepalive budget
 	RequestTimeout     time.Duration // per public request forward timeout
+
+	// CP (WAVE24-RELAY-BILLING, optional) links this relay to Vulos Cloud so that
+	// account-bound tokens are gated against their relay entitlement and their
+	// traffic is metered to POST /api/relay/usage. When nil, the relay runs
+	// UNBILLED (self-host): tokens are still authorized (name grants) but no
+	// account gating or metering happens.
+	CP *CPClient
+	// GateTTL is the entitlement-cache TTL (default 30s). EntitlementFlush is the
+	// usage-report cadence (default 45s).
+	GateTTL          time.Duration
+	MeterFlushPeriod time.Duration
 }
 
 func (c *Config) applyDefaults() {
@@ -86,6 +97,8 @@ func (c *Config) applyDefaults() {
 type Server struct {
 	cfg      Config
 	registry *registry
+	gate     *entitlementGate // account relay-entitlement gate (no-op when CP nil)
+	meter    *meter           // per-account usage meter (no-op when CP nil)
 }
 
 // New validates config and returns a Server. It fails closed: a missing token
@@ -98,10 +111,23 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("relay: a TokenStore is required (refusing to run open)")
 	}
 	cfg.applyDefaults()
-	return &Server{
+	s := &Server{
 		cfg:      cfg,
 		registry: newRegistry(cfg.MaxAgents),
-	}, nil
+		gate:     newEntitlementGate(cfg.CP, cfg.GateTTL),
+		meter:    newMeter(cfg.CP, cfg.MeterFlushPeriod),
+	}
+	// Start the background usage-flush loop (no-op when unbilled).
+	s.meter.run()
+	return s, nil
+}
+
+// Close stops background loops and performs a final usage flush. Safe to call
+// once after the HTTP server has stopped accepting new connections.
+func (s *Server) Close() {
+	if s.meter != nil {
+		s.meter.stopAndFlush()
+	}
 }
 
 // Handler returns the http.Handler serving BOTH the control endpoint and the

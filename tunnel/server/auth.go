@@ -7,37 +7,55 @@ import (
 	"strings"
 )
 
-// Grant is a single agent's authorization: a token and the exact set of names it
-// is allowed to serve. The server never lets an agent claim a name outside its
-// grant, and never lets two live agents hold the same name at once.
+// Grant is a single agent's authorization: a token, the exact set of names it is
+// allowed to serve, and (WAVE24-RELAY-BILLING) the Vulos account the token is
+// linked to. The server never lets an agent claim a name outside its grant, and
+// never lets two live agents hold the same name at once.
 type Grant struct {
 	// Token is the bearer secret the agent presents. Compared in constant time.
-	Token string
+	Token string `json:"token"`
 	// Names is the set of names this token may serve. A name maps to
 	// <name>.<relay-domain> (subdomain mode) and /t/<name>/ (path mode).
-	Names []string
+	Names []string `json:"names"`
+	// AccountID (optional) is the Vulos account this token is linked to. When set,
+	// the relay meters this token's traffic to that account and gates it against
+	// the account's relay entitlement. Empty means "unbilled" (self-host with no
+	// Vulos account) — traffic is served but not metered.
+	AccountID string `json:"account_id,omitempty"`
 }
 
-// TokenStore validates a presented (token, name) pair. Implementations must use
-// constant-time comparison and MUST fail closed.
+// TokenStore validates a presented (token, name) pair and resolves the owning
+// account. Implementations MUST use constant-time comparison and MUST fail closed.
 type TokenStore interface {
-	// Authorize returns nil if token is valid AND authorized to serve name.
-	// It returns a non-nil error otherwise (never leaked verbatim to clients).
-	Authorize(token, name string) error
+	// Authorize returns the linked accountID (possibly "") if token is valid AND
+	// authorized to serve name. It returns a non-nil error otherwise (never leaked
+	// verbatim to clients). A "" accountID with a nil error means an authorized
+	// but UNBILLED token (self-host, no Vulos account) — the caller serves it but
+	// does not meter/gate it.
+	Authorize(token, name string) (accountID string, err error)
+}
+
+// grantEntry is the stored per-token data: the allowed names + the linked account.
+type grantEntry struct {
+	names   map[string]struct{}
+	account string
 }
 
 // staticTokenStore is an in-memory store built from a fixed list of grants. It is
 // the default (config-file / env driven) store for a self-hosted relay.
 type staticTokenStore struct {
-	// byHash maps sha256(token) -> allowed name set. Hashing keeps raw tokens out
-	// of the lookup map; the compare is still constant-time against the stored hash.
-	byHash map[[32]byte]map[string]struct{}
+	// byHash maps sha256(token) -> grant entry. Hashing keeps raw tokens out of
+	// the lookup map; the compare is still constant-time against the stored hash.
+	byHash map[[32]byte]*grantEntry
 }
 
 // NewStaticTokenStore builds a TokenStore from grants. Empty tokens/names are
 // rejected at construction so a misconfigured relay fails closed rather than open.
+//
+// If the same token appears in multiple grants they are merged; a conflicting
+// account_id across grants for the same token is an error (ambiguous billing).
 func NewStaticTokenStore(grants []Grant) (TokenStore, error) {
-	s := &staticTokenStore{byHash: make(map[[32]byte]map[string]struct{})}
+	s := &staticTokenStore{byHash: make(map[[32]byte]*grantEntry)}
 	for i, g := range grants {
 		tok := strings.TrimSpace(g.Token)
 		if tok == "" {
@@ -47,17 +65,22 @@ func NewStaticTokenStore(grants []Grant) (TokenStore, error) {
 			return nil, fmt.Errorf("grant %d: no names authorized", i)
 		}
 		h := sha256.Sum256([]byte(tok))
-		set := s.byHash[h]
-		if set == nil {
-			set = make(map[string]struct{})
-			s.byHash[h] = set
+		entry := s.byHash[h]
+		if entry == nil {
+			entry = &grantEntry{names: make(map[string]struct{}), account: strings.TrimSpace(g.AccountID)}
+			s.byHash[h] = entry
+		} else if acct := strings.TrimSpace(g.AccountID); acct != "" {
+			if entry.account != "" && entry.account != acct {
+				return nil, fmt.Errorf("grant %d: token bound to conflicting account_id", i)
+			}
+			entry.account = acct
 		}
 		for _, n := range g.Names {
 			n = normalizeName(n)
 			if n == "" {
 				return nil, fmt.Errorf("grant %d: empty/invalid name", i)
 			}
-			set[n] = struct{}{}
+			entry.names[n] = struct{}{}
 		}
 	}
 	if len(s.byHash) == 0 {
@@ -66,29 +89,29 @@ func NewStaticTokenStore(grants []Grant) (TokenStore, error) {
 	return s, nil
 }
 
-func (s *staticTokenStore) Authorize(token, name string) error {
+func (s *staticTokenStore) Authorize(token, name string) (string, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {
-		return fmt.Errorf("empty token")
+		return "", fmt.Errorf("empty token")
 	}
 	h := sha256.Sum256([]byte(token))
 	// Constant-time membership: iterate all known hashes, compare each, so timing
 	// does not reveal which (if any) token matched.
-	var matched map[string]struct{}
+	var matched *grantEntry
 	var found int
-	for kh, set := range s.byHash {
+	for kh, entry := range s.byHash {
 		if subtle.ConstantTimeCompare(h[:], kh[:]) == 1 {
-			matched = set
+			matched = entry
 			found = 1
 		}
 	}
 	if found == 0 {
-		return fmt.Errorf("unknown token")
+		return "", fmt.Errorf("unknown token")
 	}
-	if _, ok := matched[normalizeName(name)]; !ok {
-		return fmt.Errorf("token not authorized for name %q", name)
+	if _, ok := matched.names[normalizeName(name)]; !ok {
+		return "", fmt.Errorf("token not authorized for name %q", name)
 	}
-	return nil
+	return matched.account, nil
 }
 
 // normalizeName lowercases and validates a name to a DNS-label-ish safe subset so

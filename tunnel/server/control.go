@@ -69,10 +69,23 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.cfg.Tokens.Authorize(token, nn); err != nil {
+	accountID, err := s.cfg.Tokens.Authorize(token, nn)
+	if err != nil {
 		// Never leak which check failed.
 		writeAck(conn, wire.RegisterAck{Type: "register_ack", OK: false, Error: "unauthorized"})
 		c.Close(websocket.StatusPolicyViolation, "unauthorized")
+		return
+	}
+
+	// WAVE24-RELAY-BILLING: entitlement gate at CONNECT (fail closed). An account
+	// whose relay entitlement is definitively denied — or that cannot be vetted
+	// against the CP — is refused before we serve any tunnel. An empty accountID
+	// (unbilled/self-host token) is always allowed. Mid-session fail-open is
+	// handled per-request in the proxy path.
+	if !s.gate.allowConnect(accountID) {
+		writeAck(conn, wire.RegisterAck{Type: "register_ack", OK: false, Error: "relay not permitted for this account"})
+		c.Close(websocket.StatusPolicyViolation, "entitlement denied")
+		log.Printf("relay: entitlement denied account=%q name=%q", accountID, nn)
 		return
 	}
 
@@ -86,6 +99,7 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 
 	sess := &session{
 		name:      nn,
+		accountID: accountID,
 		mux:       mux,
 		createdAt: time.Now(),
 		limit:     s.cfg.MaxStreamsPerAgent,

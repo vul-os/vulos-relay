@@ -36,15 +36,32 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "tunnel offline", http.StatusBadGateway)
 		return
 	}
+
+	// WAVE24-RELAY-BILLING: mid-session entitlement gate (fail OPEN on a transient
+	// CP blip — allowContinue keeps a live tunnel up on error). A definitive deny
+	// (relay disabled / over quota) returns 402 so the box surfaces "upgrade/over
+	// quota" rather than a generic error. Unbilled sessions (accountID "") pass.
+	if !s.gate.allowContinue(sess.accountID) {
+		http.Error(w, "relay quota exceeded or not permitted for this account", http.StatusPaymentRequired)
+		return
+	}
+
 	if !sess.acquireStream() {
 		http.Error(w, "tunnel busy", http.StatusServiceUnavailable)
 		return
 	}
 	defer sess.releaseStream()
 
+	// Count this request as one metered session for the account.
+	s.meter.addSession(sess.accountID)
+
 	// Cap request body size (bounds memory / abuse); streaming still works up to cap.
 	if r.Body != nil {
 		r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxRequestBytes)
+		// Meter inbound (request) bytes for the account.
+		if s.meter.enabled() && sess.accountID != "" {
+			r.Body = &countingReadCloser{rc: r.Body, meter: s.meter, account: sess.accountID}
+		}
 	}
 
 	// Open a stream into the agent for this one request.
@@ -64,7 +81,7 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 	// WebSocket upgrade passthrough: if the client is upgrading, we cannot use the
 	// normal buffered response path — we hijack and splice raw bytes.
 	if isWebSocketUpgrade(r) {
-		s.proxyWebSocket(w, outReq, stream)
+		s.proxyWebSocket(w, outReq, stream, sess.accountID)
 		return
 	}
 
@@ -85,7 +102,13 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	// Meter outbound (response) bytes for the account as they stream to the client.
+	if s.meter.enabled() && sess.accountID != "" {
+		n, _ := io.Copy(w, resp.Body)
+		s.meter.addBytes(sess.accountID, n)
+	} else {
+		_, _ = io.Copy(w, resp.Body)
+	}
 }
 
 // route resolves an inbound request to a tunnel name. Subdomain mode is primary;

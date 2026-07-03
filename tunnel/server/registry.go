@@ -12,6 +12,7 @@ import (
 // streams into the agent) keyed by the name it serves.
 type session struct {
 	name      string
+	accountID string // Vulos account this agent's token is linked to ("" = unbilled)
 	mux       *yamux.Session
 	createdAt time.Time
 

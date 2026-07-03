@@ -14,7 +14,7 @@ import (
 // Unlike the plain-HTTP path, hop-by-hop stripping must PRESERVE the Upgrade and
 // Connection headers so the tunneled app performs the handshake; we still strip
 // other hop-by-hop headers and set X-Forwarded-*.
-func (s *Server) proxyWebSocket(w http.ResponseWriter, outReq *http.Request, stream net.Conn) {
+func (s *Server) proxyWebSocket(w http.ResponseWriter, outReq *http.Request, stream net.Conn, accountID string) {
 	hj, ok := w.(http.Hijacker)
 	if !ok {
 		http.Error(w, "websocket unsupported", http.StatusInternalServerError)
@@ -55,7 +55,13 @@ func (s *Server) proxyWebSocket(w http.ResponseWriter, outReq *http.Request, str
 	// Splice: client <-> agent stream, honoring any buffered bytes on each side.
 	clientSide := wrapBuffered(clientConn, clientBuf.Reader)
 	agentSide := wrapBuffered(stream, agentBr)
-	duplexCopy(clientSide, agentSide)
+	// Meter spliced bytes (both directions) for the account. A nil meter or empty
+	// account makes meterCopy a plain io.Copy.
+	if s.meter.enabled() && accountID != "" {
+		duplexCopyMetered(clientSide, agentSide, s.meter, accountID)
+	} else {
+		duplexCopy(clientSide, agentSide)
+	}
 }
 
 // restoreUpgradeHeaders ensures the WS-critical headers survive to the agent.
