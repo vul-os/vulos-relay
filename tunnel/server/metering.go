@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -191,7 +191,9 @@ func (m *meter) flushOnce() {
 	if err != nil {
 		// CP unreachable or rejected — put the deltas back and retry next tick.
 		m.restore(items)
-		log.Printf("relay: usage flush failed (will retry): %v", err)
+		// Server-side fault, not a client event: warn level. No account/secret in
+		// the message — just the transport error.
+		slog.Warn("usage flush failed (will retry)", "component", "relay", "err", err.Error())
 		return
 	}
 	// WAVE34-RELAY-HARDEN: consume the over-quota signal the CP returns on the
@@ -214,17 +216,23 @@ func (m *meter) stopAndFlush() {
 	m.doneWG.Wait()
 }
 
-// countingReadCloser meters bytes read from an inbound request body.
+// countingReadCloser meters bytes read from an inbound request body. It updates
+// both the per-account usage meter (when account != "") and the direction-bucketed
+// observability metric (WAVE50). Either may be nil / empty independently.
 type countingReadCloser struct {
 	rc      io.ReadCloser
 	meter   *meter
 	account string
+	metrics *metrics
 }
 
 func (c *countingReadCloser) Read(p []byte) (int, error) {
 	n, err := c.rc.Read(p)
 	if n > 0 {
-		c.meter.addBytes(c.account, int64(n))
+		if c.account != "" {
+			c.meter.addBytes(c.account, int64(n))
+		}
+		c.metrics.proxiedBytes(dirInbound, int64(n))
 	}
 	return n, err
 }

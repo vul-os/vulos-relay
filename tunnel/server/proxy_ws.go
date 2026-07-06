@@ -55,13 +55,14 @@ func (s *Server) proxyWebSocket(w http.ResponseWriter, outReq *http.Request, str
 	// Splice: client <-> agent stream, honoring any buffered bytes on each side.
 	clientSide := wrapBuffered(clientConn, clientBuf.Reader)
 	agentSide := wrapBuffered(stream, agentBr)
-	// Meter spliced bytes (both directions) for the account. A nil meter or empty
-	// account makes meterCopy a plain io.Copy.
-	if s.meter.enabled() && accountID != "" {
-		duplexCopyMetered(clientSide, agentSide, s.meter, accountID)
-	} else {
-		duplexCopy(clientSide, agentSide)
+	// Meter spliced bytes (both directions) for the account AND count them in the
+	// duplex-direction observability metric (WAVE50). meterAccount is "" when
+	// per-account billing is off; the metric is always updated.
+	meterAccount := ""
+	if s.meter.enabled() {
+		meterAccount = accountID
 	}
+	duplexCopyObserved(clientSide, agentSide, s.meter, meterAccount, s.metrics)
 }
 
 // restoreUpgradeHeaders ensures the WS-critical headers survive to the agent.

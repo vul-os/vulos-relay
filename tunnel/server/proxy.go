@@ -28,6 +28,7 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 
 	name, trimmedPath, matched := s.route(r)
 	if !matched {
+		s.metrics.request(outcomeNoTunnel)
 		http.Error(w, "no such tunnel", http.StatusNotFound)
 		return
 	}
@@ -37,11 +38,15 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 	// tunnel. Both return 429 (with Retry-After) when exceeded. These are ON TOP
 	// OF the per-agent stream cap below (which bounds concurrency, not rate).
 	if !s.globalLimiter.allow() {
+		s.metrics.rateLimitReject(limitGlobal)
+		s.metrics.request(outcomeRateLimited)
 		w.Header().Set("Retry-After", "1")
 		http.Error(w, "relay busy (rate limited)", http.StatusTooManyRequests)
 		return
 	}
 	if !s.reqLimiter.allow(name) {
+		s.metrics.rateLimitReject(limitPerReq)
+		s.metrics.request(outcomeRateLimited)
 		w.Header().Set("Retry-After", "1")
 		http.Error(w, "too many requests for this tunnel", http.StatusTooManyRequests)
 		return
@@ -49,6 +54,7 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 
 	sess, ok := s.registry.lookup(name)
 	if !ok {
+		s.metrics.request(outcomeOffline)
 		http.Error(w, "tunnel offline", http.StatusBadGateway)
 		return
 	}
@@ -58,15 +64,25 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 	// (relay disabled / over quota) returns 402 so the box surfaces "upgrade/over
 	// quota" rather than a generic error. Unbilled sessions (accountID "") pass.
 	if !s.gate.allowContinue(sess.accountID) {
+		// WAVE50: this is the mid-session over-quota/entitlement cut on the request
+		// path (the 402). Count it as an over-quota cut + outcome.
+		s.metrics.tunnelCut(cutOverQuota)
+		s.metrics.request(outcomeOverQuota)
+		s.logInfo("request cut: over quota / entitlement denied", logFields{Name: name, Account: sess.accountID, Reason: string(cutOverQuota)})
 		http.Error(w, "relay quota exceeded or not permitted for this account", http.StatusPaymentRequired)
 		return
 	}
 
 	if !sess.acquireStream() {
+		s.metrics.request(outcomeBusy)
 		http.Error(w, "tunnel busy", http.StatusServiceUnavailable)
 		return
 	}
 	defer sess.releaseStream()
+
+	// WAVE50-RELAY-OBSERVABILITY: track this in-flight stream.
+	s.metrics.streamOpened()
+	defer s.metrics.streamClosed()
 
 	// Count this request as one metered session for the account.
 	s.meter.addSession(sess.accountID)
@@ -74,15 +90,19 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 	// Cap request body size (bounds memory / abuse); streaming still works up to cap.
 	if r.Body != nil {
 		r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxRequestBytes)
-		// Meter inbound (request) bytes for the account.
-		if s.meter.enabled() && sess.accountID != "" {
-			r.Body = &countingReadCloser{rc: r.Body, meter: s.meter, account: sess.accountID}
+		// Meter inbound (request) bytes for the account, and always count them into
+		// the direction-bucketed proxied-bytes metric (WAVE50).
+		acct := ""
+		if s.meter.enabled() {
+			acct = sess.accountID
 		}
+		r.Body = &countingReadCloser{rc: r.Body, meter: s.meter, account: acct, metrics: s.metrics}
 	}
 
 	// Open a stream into the agent for this one request.
 	stream, err := sess.mux.OpenStream()
 	if err != nil {
+		s.metrics.request(outcomeBadGateway)
 		http.Error(w, "tunnel error", http.StatusBadGateway)
 		return
 	}
@@ -97,12 +117,14 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 	// WebSocket upgrade passthrough: if the client is upgrading, we cannot use the
 	// normal buffered response path — we hijack and splice raw bytes.
 	if isWebSocketUpgrade(r) {
+		s.metrics.request(outcomeUpgrade)
 		s.proxyWebSocket(w, outReq, stream, sess.accountID)
 		return
 	}
 
 	// Write the request to the agent over the stream.
 	if err := outReq.Write(stream); err != nil {
+		s.metrics.request(outcomeBadGateway)
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
@@ -111,6 +133,7 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 	br := bufio.NewReader(stream)
 	resp, err := http.ReadResponse(br, outReq)
 	if err != nil {
+		s.metrics.request(outcomeBadGateway)
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
@@ -118,12 +141,14 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
+	s.metrics.request(outcomeOK)
 	// Meter outbound (response) bytes for the account as they stream to the client.
+	// WAVE50: also count them in the direction-bucketed proxied-bytes metric,
+	// regardless of whether per-account billing is enabled.
+	n, _ := io.Copy(w, resp.Body)
+	s.metrics.proxiedBytes(dirOutbound, n)
 	if s.meter.enabled() && sess.accountID != "" {
-		n, _ := io.Copy(w, resp.Body)
 		s.meter.addBytes(sess.accountID, n)
-	} else {
-		_, _ = io.Copy(w, resp.Body)
 	}
 }
 

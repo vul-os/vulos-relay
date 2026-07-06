@@ -36,6 +36,13 @@ func main() {
 		pathMode   = flag.Bool("path-mode", false, "also serve /t/<name>/ fallback (no wildcard DNS)")
 		maxAgents  = flag.Int("max-agents", 256, "max concurrent agents")
 
+		// WAVE50-RELAY-OBSERVABILITY: the admin/metrics surface. It is SEPARATE from
+		// the public tunnel listener and serves /metrics, /healthz, /readyz. Bind it
+		// to a loopback address (default) so it is never internet-reachable; binding
+		// to a routable address REQUIRES -metrics-token (refuses to start otherwise).
+		adminAddr    = flag.String("admin-addr", envOr("VULOS_RELAY_ADMIN_ADDR", "127.0.0.1:9090"), "admin/metrics listen address (loopback-only unless -metrics-token set; empty disables)")
+		metricsToken = flag.String("metrics-token", envOr("VULOS_RELAY_METRICS_TOKEN", ""), "bearer token required for NON-loopback /metrics access")
+
 		// WAVE41-RELAY-REVOCATION: static revoked-list + live-session recheck cadence.
 		revokedFile = flag.String("revoked-file", "", "path to JSON revoked-list ({\"tokens\":[],\"names\":[],\"accounts\":[]}); or set VULOS_RELAY_REVOKED")
 		revokeSweep = flag.Duration("revoke-sweep", 0, "how often to recheck live sessions for revocation (0=default 20s, <0=disable)")
@@ -131,6 +138,23 @@ func main() {
 
 	log.Printf("vulos-relayd: listening on %s domain=%s pathMode=%v agents<=%d",
 		*addr, *domain, *pathMode, *maxAgents)
+
+	// WAVE50-RELAY-OBSERVABILITY: start the admin/metrics surface on its own
+	// listener (loopback/token-gated), separate from the public tunnel listener.
+	if *adminAddr != "" {
+		go func() {
+			log.Printf("vulos-relayd: admin/metrics on %s (loopback-only%s)", *adminAddr,
+				func() string {
+					if *metricsToken != "" {
+						return " + metrics-token"
+					}
+					return ""
+				}())
+			if err := srv.ServeAdmin(server.AdminConfig{Addr: *adminAddr, MetricsToken: *metricsToken}); err != nil {
+				log.Fatalf("vulos-relayd: admin surface: %v", err)
+			}
+		}()
+	}
 
 	if *certFile != "" && *keyFile != "" {
 		log.Fatal(srv.ListenAndServeTLS(*addr, *certFile, *keyFile))

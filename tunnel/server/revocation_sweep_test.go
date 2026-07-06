@@ -45,7 +45,7 @@ func liveSession(t *testing.T, reg *registry, name, account, token string) (*ses
 		mux:       mux,
 		createdAt: time.Now(),
 	}
-	release, err := reg.add(sess)
+	release, _, err := reg.add(sess)
 	if err != nil {
 		t.Fatalf("registry add: %v", err)
 	}

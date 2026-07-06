@@ -22,6 +22,7 @@ package server
 import (
 	"crypto/tls"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -181,6 +182,13 @@ type Server struct {
 	revokePeriod time.Duration    // live-session recheck cadence (0 => sweep disabled)
 	revokeStop   chan struct{}
 	revokeWG     sync.WaitGroup
+
+	// Observability (WAVE50-RELAY-OBSERVABILITY). metrics is always non-nil; log is
+	// the structured logger. adminSrv is the running admin/metrics *http.Server (nil
+	// until ServeAdmin runs) so Close can shut it down.
+	metrics  *metrics
+	log      *slog.Logger
+	adminSrv *http.Server
 }
 
 // New validates config and returns a Server. It fails closed: a missing token
@@ -215,22 +223,36 @@ func New(cfg Config) (*Server, error) {
 		revoke:       revocationSource{static: staticRevoker, gate: gate},
 		revokePeriod: cfg.RevokeSweepPeriod,
 		revokeStop:   make(chan struct{}),
+
+		metrics: newMetrics(),
+		log:     newLogger(),
 	}
 	// WAVE34-RELAY-HARDEN: let the usage-flush loop feed the CP's over-quota
 	// verdict straight into the entitlement gate, so an over-cap account is cut
 	// on its next request (402) rather than surviving until the gate TTL lapses.
-	s.meter.onOverQuota = s.gate.markOverQuota
+	// WAVE50: also surface each over-quota verdict as a structured log line (the
+	// per-request 402 cut is counted in the proxy path).
+	s.meter.onOverQuota = func(accountID string) {
+		s.gate.markOverQuota(accountID)
+		s.logInfo("account marked over quota", logFields{Account: accountID, Reason: string(cutOverQuota)})
+	}
 	// Start the background usage-flush loop (no-op when unbilled).
 	s.meter.run()
 	// WAVE41-RELAY-REVOCATION: start the live-session revocation sweep (unless
 	// disabled). It periodically rechecks every session and drops revoked ones.
 	s.startRevocationSweep()
+	// WAVE50-RELAY-OBSERVABILITY: background loops are up ⇒ mark ready for /readyz.
+	s.metrics.setReady(true)
 	return s, nil
 }
 
 // Close stops background loops and performs a final usage flush. Safe to call
 // once after the HTTP server has stopped accepting new connections.
 func (s *Server) Close() {
+	s.metrics.setReady(false) // /readyz reports draining
+	if s.adminSrv != nil {
+		_ = s.adminSrv.Close()
+	}
 	s.stopRevocationSweep()
 	if s.meter != nil {
 		s.meter.stopAndFlush()

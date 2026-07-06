@@ -3,7 +3,6 @@ package server
 import (
 	"crypto/sha256"
 	"crypto/subtle"
-	"log"
 	"strings"
 	"sync"
 	"time"
@@ -270,7 +269,8 @@ func (s *Server) stopRevocationSweep() {
 func (s *Server) sweepRevoked() {
 	for _, sess := range s.registry.snapshot() {
 		if s.revoke.revoked(sess.token, sess.name, sess.accountID) {
-			log.Printf("relay: revoking live tunnel name=%q account=%q", sess.name, sess.accountID)
+			s.metrics.tunnelCut(cutRevocation)
+			s.logInfo("revoking live tunnel", logFields{Name: sess.name, Account: sess.accountID, Reason: string(cutRevocation)})
 			sess.mux.Close()
 		}
 	}

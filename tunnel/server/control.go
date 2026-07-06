@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -24,6 +23,9 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 	// BEFORE spending a WS upgrade + CP entitlement round-trip on them. Return 429
 	// (with Retry-After) when a source exceeds its token bucket.
 	if !s.ctrlLimiter.allow(clientIP(r)) {
+		s.metrics.rateLimitReject(limitControl)
+		s.metrics.authFail(authFailRateLimited)
+		s.logDebug("control connection rate-limited", logFields{Remote: clientIP(r), Reason: string(authFailRateLimited)})
 		w.Header().Set("Retry-After", "1")
 		http.Error(w, "too many control-connection attempts", http.StatusTooManyRequests)
 		return
@@ -34,6 +36,8 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 	// but reject obviously-unauthenticated connections before the WS upgrade to
 	// avoid spending an upgrade on anonymous clients.
 	if bearer(r) == "" {
+		s.metrics.authFail(authFailNoBearer)
+		s.logDebug("control connection missing bearer", logFields{Remote: clientIP(r), Reason: string(authFailNoBearer)})
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -53,6 +57,8 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
 	name, token, ok := readRegister(conn)
 	if !ok {
+		s.metrics.authFail(authFailBadRegister)
+		s.logDebug("bad register frame", logFields{Remote: clientIP(r), Reason: string(authFailBadRegister)})
 		writeAck(conn, wire.RegisterAck{Type: "register_ack", OK: false, Error: "bad registration"})
 		c.Close(websocket.StatusPolicyViolation, "bad registration")
 		return
@@ -63,6 +69,8 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 	// work; the header is what edge/CDN auth sees.
 	authToken := bearer(r)
 	if authToken != "" && token != "" && authToken != token {
+		s.metrics.authFail(authFailUnauthorized)
+		s.logDebug("register token mismatch", logFields{Remote: clientIP(r), Reason: "token_mismatch"})
 		writeAck(conn, wire.RegisterAck{Type: "register_ack", OK: false, Error: "token mismatch"})
 		c.Close(websocket.StatusPolicyViolation, "token mismatch")
 		return
@@ -73,6 +81,8 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 
 	nn := normalizeName(name)
 	if nn == "" {
+		s.metrics.authFail(authFailBadRegister)
+		s.logDebug("invalid tunnel name", logFields{Remote: clientIP(r), Reason: "invalid_name"})
 		writeAck(conn, wire.RegisterAck{Type: "register_ack", OK: false, Error: "invalid name"})
 		c.Close(websocket.StatusPolicyViolation, "invalid name")
 		return
@@ -80,7 +90,10 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 
 	accountID, err := s.cfg.Tokens.Authorize(token, nn)
 	if err != nil {
-		// Never leak which check failed.
+		// Never leak which check failed. Log the NAME (public) + remote only — never
+		// the token/secret and never the specific failure reason.
+		s.metrics.authFail(authFailUnauthorized)
+		s.logDebug("authorize failed", logFields{Name: nn, Remote: clientIP(r), Reason: string(authFailUnauthorized)})
 		writeAck(conn, wire.RegisterAck{Type: "register_ack", OK: false, Error: "unauthorized"})
 		c.Close(websocket.StatusPolicyViolation, "unauthorized")
 		return
@@ -92,9 +105,10 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 	// (unbilled/self-host token) is always allowed. Mid-session fail-open is
 	// handled per-request in the proxy path.
 	if !s.gate.allowConnect(accountID) {
+		s.metrics.authFail(authFailEntitlement)
 		writeAck(conn, wire.RegisterAck{Type: "register_ack", OK: false, Error: "relay not permitted for this account"})
 		c.Close(websocket.StatusPolicyViolation, "entitlement denied")
-		log.Printf("relay: entitlement denied account=%q name=%q", accountID, nn)
+		s.logInfo("connect refused: entitlement denied", logFields{Name: nn, Account: accountID, Remote: clientIP(r), Reason: string(authFailEntitlement)})
 		return
 	}
 
@@ -114,9 +128,11 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		createdAt: time.Now(),
 		limit:     s.cfg.MaxStreamsPerAgent,
 	}
-	release, err := s.registry.add(sess)
+	release, reconnect, err := s.registry.add(sess)
 	if err != nil {
 		// Name collision or capacity: fail closed, don't hijack.
+		s.metrics.authFail(authFailNameTaken)
+		s.logInfo("connect refused: name unavailable", logFields{Name: nn, Account: accountID, Remote: clientIP(r), Reason: string(authFailNameTaken)})
 		writeAck(conn, wire.RegisterAck{Type: "register_ack", OK: false, Error: "name unavailable"})
 		mux.Close()
 		c.Close(websocket.StatusPolicyViolation, "name unavailable")
@@ -125,17 +141,25 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 	defer release()
 	defer mux.Close()
 
+	// WAVE50-RELAY-OBSERVABILITY: track the live session in metrics for the whole
+	// registered lifetime. The deferred agentDisconnected fires on any exit below.
+	s.metrics.agentConnected()
+	defer s.metrics.agentDisconnected()
+	if reconnect {
+		s.metrics.reconnected()
+	}
+
 	// Clear the handshake deadline; yamux keepalive governs liveness now.
 	_ = conn.SetDeadline(time.Time{})
 
 	if err := writeAck(conn, wire.RegisterAck{Type: "register_ack", OK: true, PublicURL: s.publicURL(nn)}); err != nil {
 		return
 	}
-	log.Printf("relay: agent registered name=%q remote=%s", nn, clientIP(r))
+	s.logInfo("agent registered", logFields{Name: nn, Account: accountID, Remote: clientIP(r)})
 
 	// Block until the session dies; yamux keepalive detects dead peers.
 	<-mux.CloseChan()
-	log.Printf("relay: agent unregistered name=%q", nn)
+	s.logInfo("agent unregistered", logFields{Name: nn, Account: accountID})
 }
 
 // readRegister decodes the bounded Register frame.
