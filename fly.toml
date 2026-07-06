@@ -1,0 +1,59 @@
+# fly.toml — Vulos sovereign relay server (vulos-relayd) on Fly.io
+#
+# vulos-relayd is the public half of the Vulos reverse tunnel. On Fly it runs as
+# plain HTTP on an internal port with Fly's edge terminating TLS (force_https),
+# so no -cert/-key is needed here. Subdomain routing (*.relay.example.com) needs
+# a wildcard cert on the Fly app + wildcard DNS pointing at it; if you can't get
+# wildcard DNS, enable path-mode instead (VULOS_RELAY_PATH_MODE below → -path-mode).
+#
+#   fly launch --no-deploy --name vulos-relayd --copy-config
+#   fly certs add "*.relay.example.com" -a vulos-relayd    # wildcard subdomain routing
+#   fly secrets set -a vulos-relayd \
+#     VULOS_RELAY_DOMAIN=relay.example.com \
+#     VULOS_RELAY_TOKENS='[{"token":"SECRET","names":["box1"]}]'
+#   fly deploy -c fly.toml
+#
+# The image is built + published by .github/workflows/release.yml on a v* tag
+# (ghcr.io/vul-os/vulos-relayd); [build].image points Fly at it.
+
+app            = "vulos-relayd"
+primary_region = "PLACEHOLDER"   # Fly region code (e.g. "iad", "lhr", "fra")
+
+[build]
+  image = "ghcr.io/vul-os/vulos-relayd:latest"
+
+[env]
+  # -domain is REQUIRED (vulos-relayd refuses to start without it). Set the real
+  # base relay domain here or via `fly secrets set VULOS_RELAY_DOMAIN=...`.
+  VULOS_RELAY_DOMAIN = "PLACEHOLDER"   # e.g. relay.example.com
+  # Uncomment to also serve /t/<name>/ when wildcard DNS is unavailable:
+  # VULOS_RELAY_PATH_MODE = "1"        # NOTE: cmd flag is -path-mode; wire via CMD if needed
+
+# Agent grants: provide via the VULOS_RELAY_TOKENS secret (JSON), NOT here —
+# never bake tokens into the config:
+#   fly secrets set VULOS_RELAY_TOKENS='[{"token":"SECRET","names":["box1"]}]'
+# Optional Vulos Cloud billing/gating: set VULOS_CP_URL + CP_SHARED_SECRET secrets.
+
+[http_service]
+  internal_port        = 8443          # matches cmd/vulos-relayd -addr default
+  force_https          = true          # Fly edge terminates TLS; relayd speaks plain HTTP
+  auto_stop_machines   = "off"         # tunnels are long-lived control connections
+  auto_start_machines  = true
+  min_machines_running = 1
+  processes            = ["app"]
+
+  [http_service.concurrency]
+    type       = "connections"
+    hard_limit = 1000
+    soft_limit = 800
+
+  [[http_service.checks]]
+    type         = "http"
+    path         = "/healthz"          # handlePublic serves this regardless of Host
+    interval     = "15s"
+    timeout      = "5s"
+    grace_period = "10s"
+
+[[vm]]
+  size   = "shared-cpu-1x"
+  memory = "512mb"
