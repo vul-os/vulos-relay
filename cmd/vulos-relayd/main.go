@@ -36,6 +36,10 @@ func main() {
 		pathMode   = flag.Bool("path-mode", false, "also serve /t/<name>/ fallback (no wildcard DNS)")
 		maxAgents  = flag.Int("max-agents", 256, "max concurrent agents")
 
+		// WAVE41-RELAY-REVOCATION: static revoked-list + live-session recheck cadence.
+		revokedFile = flag.String("revoked-file", "", "path to JSON revoked-list ({\"tokens\":[],\"names\":[],\"accounts\":[]}); or set VULOS_RELAY_REVOKED")
+		revokeSweep = flag.Duration("revoke-sweep", 0, "how often to recheck live sessions for revocation (0=default 20s, <0=disable)")
+
 		// WAVE34-RELAY-HARDEN: rate limits for the internet-facing surfaces. 0 uses
 		// the built-in safe default; a negative value DISABLES that limiter.
 		ctrlRate   = flag.Float64("ratelimit-control-rate", envFloat("VULOS_RELAY_CTRL_RATE", 0), "control-conn attempts/sec per source IP (0=default 5, <0=off)")
@@ -74,6 +78,19 @@ func main() {
 		log.Printf("vulos-relayd: running UNBILLED (no -cp-url/-cp-shared-secret) — tokens authorized but not metered")
 	}
 
+	// WAVE41-RELAY-REVOCATION: load the optional static revoked-list (file/env). A
+	// revoked token/name/account is refused at connect and cut mid-session by the
+	// sweep. Applies to the static-grants store; the CP-token store's revocation is
+	// the CP revoked/404 path.
+	revoked, err := loadRevoked(*revokedFile)
+	if err != nil {
+		log.Fatalf("vulos-relayd: %v", err)
+	}
+	if n := len(revoked.Tokens) + len(revoked.Names) + len(revoked.Accounts); n > 0 {
+		log.Printf("vulos-relayd: static revoked-list loaded (%d tokens, %d names, %d accounts)",
+			len(revoked.Tokens), len(revoked.Names), len(revoked.Accounts))
+	}
+
 	// Token store: either CP install-credential resolution, or the static grants.
 	var store server.TokenStore
 	if *cpTokenMode {
@@ -84,7 +101,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("vulos-relayd: %v", err)
 		}
-		st, err := server.NewStaticTokenStore(grants)
+		st, err := server.NewStaticTokenStoreWithRevoked(grants, revoked)
 		if err != nil {
 			log.Fatalf("vulos-relayd: token store: %v", err)
 		}
@@ -104,6 +121,8 @@ func main() {
 		PublicReqBurst:   *reqBurst,
 		GlobalReqRate:    *globalRate,
 		GlobalReqBurst:   *globBurst,
+
+		RevokeSweepPeriod: *revokeSweep,
 	})
 	if err != nil {
 		log.Fatalf("vulos-relayd: %v", err)
@@ -150,6 +169,30 @@ func loadGrants(path string) ([]server.Grant, error) {
 		return nil, fmt.Errorf("parse grants JSON: %w", err)
 	}
 	return grants, nil
+}
+
+// loadRevoked reads the static revoked-list from -revoked-file, else the
+// VULOS_RELAY_REVOKED env, else returns an empty (revoke-nothing) spec. Unlike
+// grants, an absent revoked-list is fine (it just revokes nothing).
+func loadRevoked(path string) (server.RevokedSpec, error) {
+	var data []byte
+	switch {
+	case path != "":
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return server.RevokedSpec{}, fmt.Errorf("read revoked file: %w", err)
+		}
+		data = b
+	case os.Getenv("VULOS_RELAY_REVOKED") != "":
+		data = []byte(os.Getenv("VULOS_RELAY_REVOKED"))
+	default:
+		return server.RevokedSpec{}, nil
+	}
+	var spec server.RevokedSpec
+	if err := json.Unmarshal(data, &spec); err != nil {
+		return server.RevokedSpec{}, fmt.Errorf("parse revoked JSON: %w", err)
+	}
+	return spec, nil
 }
 
 func envOr(k, def string) string {

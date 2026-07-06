@@ -13,6 +13,12 @@ import (
 type session struct {
 	name      string
 	accountID string // Vulos account this agent's token is linked to ("" = unbilled)
+	// token is the raw bearer secret this session authenticated with, retained so
+	// the WAVE41-RELAY-REVOCATION sweep can recheck it against the static
+	// revoked-list mid-session. It lives only in memory for the session lifetime
+	// (the token was already in memory to authenticate); it is never logged or sent
+	// anywhere. Empty for sessions created before revocation was wired (e.g. tests).
+	token     string
 	mux       *yamux.Session
 	createdAt time.Time
 
@@ -86,4 +92,17 @@ func (r *registry) count() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.byName)
+}
+
+// snapshot returns the current live sessions as a slice. The revocation sweep
+// uses it so it can recheck + close sessions WITHOUT holding the registry lock
+// (mux.Close can block; closing under the lock would stall connects/routes).
+func (r *registry) snapshot() []*session {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]*session, 0, len(r.byName))
+	for _, s := range r.byName {
+		out = append(out, s)
+	}
+	return out
 }

@@ -230,4 +230,3 @@ func (c *countingReadCloser) Read(p []byte) (int, error) {
 }
 
 func (c *countingReadCloser) Close() error { return c.rc.Close() }
-

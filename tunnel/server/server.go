@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -91,6 +92,17 @@ type Config struct {
 	// RateLimitMaxKeys caps distinct buckets per limiter (bounds memory).
 	// Default 100_000.
 	RateLimitMaxKeys int
+
+	// Revocation (WAVE41-RELAY-REVOCATION).
+
+	// RevokeSweepPeriod is how often the server rechecks every LIVE session against
+	// the revocation sources (static revoked-list + CP revoked/404 via the
+	// entitlement poll) and drops any that are now definitively revoked. This
+	// bounds the mid-session revocation latency: a revoke takes at most one sweep
+	// period (plus, for the CP path, up to one gate TTL for the poll to observe it)
+	// to cut a live tunnel. 0 => default 20s. A negative value DISABLES the sweep
+	// (connect-time revocation still applies).
+	RevokeSweepPeriod time.Duration
 }
 
 // rateLimitField resolves a configured rate: 0 => the supplied default, a
@@ -142,6 +154,14 @@ func (c *Config) applyDefaults() {
 	if c.RateLimitMaxKeys == 0 {
 		c.RateLimitMaxKeys = 100_000
 	}
+	// WAVE41-RELAY-REVOCATION: 0 => default 20s live-session recheck; a negative
+	// value disables the sweep and is normalized to 0 so startRevocationSweep skips.
+	switch {
+	case c.RevokeSweepPeriod < 0:
+		c.RevokeSweepPeriod = 0
+	case c.RevokeSweepPeriod == 0:
+		c.RevokeSweepPeriod = 20 * time.Second
+	}
 }
 
 // Server is the relay. Construct with New, then use Handler() / ListenAndServe*.
@@ -155,6 +175,12 @@ type Server struct {
 	ctrlLimiter   *rateLimiter       // control-conn attempts per source IP
 	reqLimiter    *rateLimiter       // public requests per agent/session
 	globalLimiter *globalRateLimiter // aggregate public request cap
+
+	// Revocation (WAVE41-RELAY-REVOCATION).
+	revoke       revocationSource // static revoked-list + CP revoked/404 signal
+	revokePeriod time.Duration    // live-session recheck cadence (0 => sweep disabled)
+	revokeStop   chan struct{}
+	revokeWG     sync.WaitGroup
 }
 
 // New validates config and returns a Server. It fails closed: a missing token
@@ -167,15 +193,28 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("relay: a TokenStore is required (refusing to run open)")
 	}
 	cfg.applyDefaults()
+	gate := newEntitlementGate(cfg.CP, cfg.GateTTL)
+	// WAVE41-RELAY-REVOCATION: the static revoked-list comes from the token store if
+	// it implements Revoker (staticTokenStore does; CPTokenStore does not — its
+	// revocation is the CP revoked/404 path). Fall back to a no-op so the sweep
+	// needs no nil-checks.
+	var staticRevoker Revoker = noopRevoker{}
+	if rv, ok := cfg.Tokens.(Revoker); ok {
+		staticRevoker = rv
+	}
 	s := &Server{
 		cfg:      cfg,
 		registry: newRegistry(cfg.MaxAgents),
-		gate:     newEntitlementGate(cfg.CP, cfg.GateTTL),
+		gate:     gate,
 		meter:    newMeter(cfg.CP, cfg.MeterFlushPeriod),
 
 		ctrlLimiter:   newRateLimiter(cfg.ControlConnRate, cfg.ControlConnBurst, cfg.RateLimitIdleTTL, cfg.RateLimitMaxKeys),
 		reqLimiter:    newRateLimiter(cfg.PublicReqRate, cfg.PublicReqBurst, cfg.RateLimitIdleTTL, cfg.RateLimitMaxKeys),
 		globalLimiter: newGlobalRateLimiter(cfg.GlobalReqRate, cfg.GlobalReqBurst),
+
+		revoke:       revocationSource{static: staticRevoker, gate: gate},
+		revokePeriod: cfg.RevokeSweepPeriod,
+		revokeStop:   make(chan struct{}),
 	}
 	// WAVE34-RELAY-HARDEN: let the usage-flush loop feed the CP's over-quota
 	// verdict straight into the entitlement gate, so an over-cap account is cut
@@ -183,12 +222,16 @@ func New(cfg Config) (*Server, error) {
 	s.meter.onOverQuota = s.gate.markOverQuota
 	// Start the background usage-flush loop (no-op when unbilled).
 	s.meter.run()
+	// WAVE41-RELAY-REVOCATION: start the live-session revocation sweep (unless
+	// disabled). It periodically rechecks every session and drops revoked ones.
+	s.startRevocationSweep()
 	return s, nil
 }
 
 // Close stops background loops and performs a final usage flush. Safe to call
 // once after the HTTP server has stopped accepting new connections.
 func (s *Server) Close() {
+	s.stopRevocationSweep()
 	if s.meter != nil {
 		s.meter.stopAndFlush()
 	}
@@ -230,3 +273,30 @@ func (s *Server) ListenAndServe(addr string) error {
 
 // AgentCount returns the number of live agent sessions (for /healthz or metrics).
 func (s *Server) AgentCount() int { return s.registry.count() }
+
+// RevokeToken revokes a static token at runtime (no config edit / restart) and
+// immediately drops any matching live session. A no-op if the token store does
+// not support runtime revocation (e.g. the CP-credential store, whose revocation
+// is driven by the CP's revoked/404 signal). WAVE41-RELAY-REVOCATION.
+func (s *Server) RevokeToken(token string) {
+	if rr, ok := s.cfg.Tokens.(RuntimeRevoker); ok {
+		rr.RevokeToken(token)
+		s.sweepRevoked() // cut the leaked token's live tunnel now, not on the next tick
+	}
+}
+
+// RevokeName revokes a tunnel name at runtime and drops its live session now.
+func (s *Server) RevokeName(name string) {
+	if rr, ok := s.cfg.Tokens.(RuntimeRevoker); ok {
+		rr.RevokeName(name)
+		s.sweepRevoked()
+	}
+}
+
+// RevokeAccount revokes an account at runtime and drops its live sessions now.
+func (s *Server) RevokeAccount(account string) {
+	if rr, ok := s.cfg.Tokens.(RuntimeRevoker); ok {
+		rr.RevokeAccount(account)
+		s.sweepRevoked()
+	}
+}

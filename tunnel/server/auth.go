@@ -43,10 +43,16 @@ type grantEntry struct {
 
 // staticTokenStore is an in-memory store built from a fixed list of grants. It is
 // the default (config-file / env driven) store for a self-hosted relay.
+//
+// WAVE41-RELAY-REVOCATION: it also carries an optional static revoked-list. A
+// revoked token/name/account is refused at connect (in Authorize) and matched by
+// the live-session revocation sweep (via the Revoker interface).
 type staticTokenStore struct {
 	// byHash maps sha256(token) -> grant entry. Hashing keeps raw tokens out of
 	// the lookup map; the compare is still constant-time against the stored hash.
 	byHash map[[32]byte]*grantEntry
+	// revoked is the static revoked-list (never nil; empty => nothing revoked).
+	revoked *revokedList
 }
 
 // NewStaticTokenStore builds a TokenStore from grants. Empty tokens/names are
@@ -55,7 +61,14 @@ type staticTokenStore struct {
 // If the same token appears in multiple grants they are merged; a conflicting
 // account_id across grants for the same token is an error (ambiguous billing).
 func NewStaticTokenStore(grants []Grant) (TokenStore, error) {
-	s := &staticTokenStore{byHash: make(map[[32]byte]*grantEntry)}
+	return NewStaticTokenStoreWithRevoked(grants, RevokedSpec{})
+}
+
+// NewStaticTokenStoreWithRevoked is NewStaticTokenStore plus a static revoked-list
+// (WAVE41-RELAY-REVOCATION). A revoked token/name/account is refused at connect
+// and dropped mid-session by the revocation sweep.
+func NewStaticTokenStoreWithRevoked(grants []Grant, revoked RevokedSpec) (TokenStore, error) {
+	s := &staticTokenStore{byHash: make(map[[32]byte]*grantEntry), revoked: newRevokedList(revoked)}
 	for i, g := range grants {
 		tok := strings.TrimSpace(g.Token)
 		if tok == "" {
@@ -111,8 +124,37 @@ func (s *staticTokenStore) Authorize(token, name string) (string, error) {
 	if _, ok := matched.names[normalizeName(name)]; !ok {
 		return "", fmt.Errorf("token not authorized for name %q", name)
 	}
+	// WAVE41-RELAY-REVOCATION: refuse a revoked token/name/account at connect.
+	if s.revoked.IsRevoked(token, name, matched.account) {
+		return "", fmt.Errorf("credential revoked")
+	}
 	return matched.account, nil
 }
+
+// IsRevoked implements Revoker: reports whether token/name/account is in the
+// static revoked-list. Used by the live-session revocation sweep.
+func (s *staticTokenStore) IsRevoked(token, name, account string) bool {
+	return s.revoked.IsRevoked(token, name, account)
+}
+
+// RevokeToken/RevokeName/RevokeAccount add a runtime revocation to the static
+// store WITHOUT a config edit + restart — the operator-facing side of the audit
+// fix. The next connect is refused and the next sweep drops any live session.
+func (s *staticTokenStore) RevokeToken(token string)     { s.revoked.revokeToken(token) }
+func (s *staticTokenStore) RevokeName(name string)       { s.revoked.revokeName(name) }
+func (s *staticTokenStore) RevokeAccount(account string) { s.revoked.revokeAccount(account) }
+
+// RuntimeRevoker is implemented by a token store that supports revoking a
+// credential at runtime (the static store does). A management surface can type-
+// assert Config.Tokens to this to revoke without a restart.
+type RuntimeRevoker interface {
+	RevokeToken(token string)
+	RevokeName(name string)
+	RevokeAccount(account string)
+}
+
+var _ Revoker = (*staticTokenStore)(nil)
+var _ RuntimeRevoker = (*staticTokenStore)(nil)
 
 // normalizeName lowercases and validates a name to a DNS-label-ish safe subset so
 // it can be a subdomain and a path segment. Returns "" if invalid.

@@ -109,6 +109,7 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 	sess := &session{
 		name:      nn,
 		accountID: accountID,
+		token:     token, // retained for the WAVE41 revocation sweep (static-list recheck)
 		mux:       mux,
 		createdAt: time.Now(),
 		limit:     s.cfg.MaxStreamsPerAgent,

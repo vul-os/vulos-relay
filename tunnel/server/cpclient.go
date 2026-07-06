@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -61,7 +62,20 @@ type Entitlement struct {
 	OverQuota    bool   `json:"over_quota"`
 	ByteCap      int64  `json:"byte_cap"`
 	TurnCap      int    `json:"turn_cap"`
+	// Revoked (WAVE41-RELAY-REVOCATION) is set by the CP when the credential or
+	// account has been revoked. A revoked=true response is a DEFINITIVE revoke: the
+	// connect is refused and any live tunnel is dropped on the next recheck. A CP
+	// 404 for a previously-valid credential is treated the same way (see
+	// ErrCredentialRevoked below).
+	Revoked bool `json:"revoked"`
 }
+
+// ErrCredentialRevoked is returned by the entitlement reads when the CP
+// DEFINITIVELY revokes a credential/account: either it answers 404 (Not Found —
+// the credential no longer exists) or it returns revoked:true. It is distinct
+// from a transient/unknown CP error so callers can fail CLOSED on a revoke while
+// still failing OPEN mid-session on a mere blip.
+var ErrCredentialRevoked = errors.New("cpclient: credential revoked")
 
 // EntitlementForAccount reads an account's relay entitlement as a SERVICE caller
 // (shared secret + account_id). Used by the entitlement gate.
@@ -99,12 +113,24 @@ func (c *CPClient) doEntitlement(req *http.Request) (Entitlement, error) {
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	// WAVE41-RELAY-REVOCATION: a 404 is a DEFINITIVE revoke (the credential/account
+	// no longer exists at the CP), distinct from a transient 5xx/timeout. Surface it
+	// as ErrCredentialRevoked so the connect path fails closed and the live-session
+	// sweep drops the tunnel — but a blip (5xx / network) stays a generic error so
+	// mid-session stays fail-open.
+	if resp.StatusCode == http.StatusNotFound {
+		return Entitlement{}, ErrCredentialRevoked
+	}
 	if resp.StatusCode != http.StatusOK {
 		return Entitlement{}, fmt.Errorf("cpclient: entitlement status %d", resp.StatusCode)
 	}
 	var ent Entitlement
 	if err := json.Unmarshal(body, &ent); err != nil {
 		return Entitlement{}, fmt.Errorf("cpclient: decode entitlement: %w", err)
+	}
+	// An explicit revoked:true flag is also a definitive revoke.
+	if ent.Revoked {
+		return ent, ErrCredentialRevoked
 	}
 	return ent, nil
 }
@@ -228,6 +254,16 @@ func (s *CPTokenStore) Authorize(token, name string) (string, error) {
 	defer cancel()
 	ent, err := s.CP.EntitlementForCredential(ctx, token)
 	if err != nil {
+		// WAVE41-RELAY-REVOCATION: a DEFINITIVE revoke (revoked:true / 404) purges
+		// any cached good mapping so a leaked token cannot ride a stale cache entry,
+		// and fails closed. A transient error also fails closed at connect (we cannot
+		// vet an unknown token) but leaves any cache untouched.
+		if errors.Is(err, ErrCredentialRevoked) {
+			s.mu.Lock()
+			delete(s.cache, h)
+			s.mu.Unlock()
+			return "", fmt.Errorf("credential revoked")
+		}
 		// Fail CLOSED at connect: an install credential we cannot validate is
 		// rejected (the connect-time gate must not pass an unknown token).
 		return "", fmt.Errorf("credential validation failed")

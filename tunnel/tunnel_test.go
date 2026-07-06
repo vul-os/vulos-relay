@@ -42,10 +42,10 @@ func newRelay(t *testing.T, grants []server.Grant) *httptest.Server {
 		t.Fatalf("token store: %v", err)
 	}
 	srv, err := server.New(server.Config{
-		Domain:          testDomain,
-		Tokens:          store,
-		EnablePathMode:  true,
-		MaxAgents:       4,
+		Domain:             testDomain,
+		Tokens:             store,
+		EnablePathMode:     true,
+		MaxAgents:          4,
 		MaxStreamsPerAgent: 4,
 	})
 	if err != nil {
@@ -298,10 +298,10 @@ func TestSSRFGuard(t *testing.T) {
 	defer relay.Close()
 
 	cases := []string{
-		"10.0.0.5:80",           // private, non-loopback
-		"169.254.169.254:80",    // cloud metadata endpoint
-		"example.com:80",        // arbitrary host
-		"0.0.0.0:80",            // wildcard
+		"10.0.0.5:80",        // private, non-loopback
+		"169.254.169.254:80", // cloud metadata endpoint
+		"example.com:80",     // arbitrary host
+		"0.0.0.0:80",         // wildcard
 	}
 	for _, addr := range cases {
 		a := agent.New(agent.Options{
