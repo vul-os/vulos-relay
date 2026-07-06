@@ -117,6 +117,10 @@ func New(cfg Config) (*Server, error) {
 		gate:     newEntitlementGate(cfg.CP, cfg.GateTTL),
 		meter:    newMeter(cfg.CP, cfg.MeterFlushPeriod),
 	}
+	// WAVE34-RELAY-HARDEN: let the usage-flush loop feed the CP's over-quota
+	// verdict straight into the entitlement gate, so an over-cap account is cut
+	// on its next request (402) rather than surviving until the gate TTL lapses.
+	s.meter.onOverQuota = s.gate.markOverQuota
 	// Start the background usage-flush loop (no-op when unbilled).
 	s.meter.run()
 	return s, nil

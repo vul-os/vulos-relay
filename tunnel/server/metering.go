@@ -31,6 +31,12 @@ type meter struct {
 	cp            *CPClient
 	flushInterval time.Duration
 
+	// onOverQuota is invoked (if set) for each account the CP reports as over
+	// quota in a usage-report response, so the entitlement gate can cut that
+	// account promptly on its NEXT request instead of waiting a full gate TTL.
+	// Nil when metering is disabled / no gate is wired.
+	onOverQuota func(accountID string)
+
 	mu      sync.Mutex
 	pending map[string]*meterDelta // accountID -> pending delta
 	// maxAccounts bounds memory: if we somehow exceed it we drop the oldest by
@@ -181,11 +187,21 @@ func (m *meter) flushOnce() {
 	reportID := m.nextReportID()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if _, err := m.cp.ReportUsage(ctx, reportID, items); err != nil {
+	overQuota, err := m.cp.ReportUsage(ctx, reportID, items)
+	if err != nil {
 		// CP unreachable or rejected — put the deltas back and retry next tick.
 		m.restore(items)
 		log.Printf("relay: usage flush failed (will retry): %v", err)
 		return
+	}
+	// WAVE34-RELAY-HARDEN: consume the over-quota signal the CP returns on the
+	// usage report. Previously this was dropped, so an over-cap tenant kept
+	// tunnelling until the next entitlement-gate TTL (~30s) lapsed. Pushing it
+	// into the gate now makes the account get cut with 402 on its NEXT request.
+	if m.onOverQuota != nil {
+		for _, acct := range overQuota {
+			m.onOverQuota(acct)
+		}
 	}
 }
 
