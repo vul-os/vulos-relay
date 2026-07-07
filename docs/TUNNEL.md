@@ -41,6 +41,11 @@ Only **outbound 443** is required from the box. The box binds nothing inbound.
     `-path-mode` when you can't provision wildcard DNS.
 - **Reconnect.** The agent maintains the tunnel with exponential backoff + full
   jitter and reconnects automatically after any drop.
+- **Graceful drain.** On `SIGTERM`/`SIGINT` (what Fly and most orchestrators send on
+  deploy/restart) the relay flips `/readyz` to draining, stops accepting new
+  connections, lets in-flight requests finish (bounded), then flushes the final
+  metered usage before exiting — so a rolling restart neither drops a live request
+  mid-flight nor loses the last usage deltas. Agents reconnect to the replacement.
 
 ## Security model (fails closed — this is internet-facing)
 

@@ -15,13 +15,19 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/vul-os/vulos-relay/tunnel/server"
 )
@@ -134,10 +140,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("vulos-relayd: %v", err)
 	}
-	defer srv.Close() // stop the meter + final usage flush on exit
 
 	log.Printf("vulos-relayd: listening on %s domain=%s pathMode=%v agents<=%d",
 		*addr, *domain, *pathMode, *maxAgents)
+
+	// SIGTERM/SIGINT trigger a graceful drain (Fly + most orchestrators send
+	// SIGTERM on deploy/restart): stop accepting new connections, let in-flight
+	// requests finish, then flush the final metered usage. Without this the process
+	// would be hard-killed and the last usage deltas lost.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	// WAVE50-RELAY-OBSERVABILITY: start the admin/metrics surface on its own
 	// listener (loopback/token-gated), separate from the public tunnel listener.
@@ -150,17 +162,40 @@ func main() {
 					}
 					return ""
 				}())
-			if err := srv.ServeAdmin(server.AdminConfig{Addr: *adminAddr, MetricsToken: *metricsToken}); err != nil {
+			if err := srv.ServeAdmin(server.AdminConfig{Addr: *adminAddr, MetricsToken: *metricsToken}); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Fatalf("vulos-relayd: admin surface: %v", err)
 			}
 		}()
 	}
 
-	if *certFile != "" && *keyFile != "" {
-		log.Fatal(srv.ListenAndServeTLS(*addr, *certFile, *keyFile))
+	// Run the public listener in the background so main can wait on either a signal
+	// (graceful drain) or a fatal listener error.
+	serveErr := make(chan error, 1)
+	go func() {
+		if *certFile != "" && *keyFile != "" {
+			serveErr <- srv.ListenAndServeTLS(*addr, *certFile, *keyFile)
+			return
+		}
+		log.Printf("vulos-relayd: WARNING running plain HTTP — terminate TLS at your edge/CDN")
+		serveErr <- srv.ListenAndServe(*addr)
+	}()
+
+	select {
+	case err := <-serveErr:
+		// The listener failed to start or died on its own (not a shutdown). Still
+		// flush usage before exiting non-zero.
+		srv.Close()
+		log.Fatalf("vulos-relayd: %v", err)
+	case <-ctx.Done():
+		stop() // restore default signal handling: a second signal now kills hard
+		log.Printf("vulos-relayd: shutting down (draining in-flight requests)")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("vulos-relayd: graceful shutdown incomplete: %v", err)
+		}
+		log.Printf("vulos-relayd: stopped")
 	}
-	log.Printf("vulos-relayd: WARNING running plain HTTP — terminate TLS at your edge/CDN")
-	log.Fatal(srv.ListenAndServe(*addr))
 }
 
 // sanitizePoP derives a DNS-ish PoP id fallback from the relay domain.

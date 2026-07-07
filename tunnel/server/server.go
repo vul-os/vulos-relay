@@ -20,6 +20,7 @@
 package server
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"log/slog"
@@ -189,6 +190,12 @@ type Server struct {
 	metrics  *metrics
 	log      *slog.Logger
 	adminSrv *http.Server
+
+	// pubSrv is the running public tunnel *http.Server (nil until one of the
+	// ListenAndServe* methods runs). Retained under srvMu so Shutdown can drain it
+	// gracefully on SIGTERM/SIGINT instead of the process being hard-killed mid-flush.
+	srvMu  sync.Mutex
+	pubSrv *http.Server
 }
 
 // New validates config and returns a Server. It fails closed: a missing token
@@ -268,9 +275,10 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
-// httpServer builds an *http.Server with the security-relevant timeouts/caps set.
+// httpServer builds an *http.Server with the security-relevant timeouts/caps set
+// and retains it so Shutdown can drain it gracefully.
 func (s *Server) httpServer(addr string) *http.Server {
-	return &http.Server{
+	srv := &http.Server{
 		Addr:              addr,
 		Handler:           s.Handler(),
 		TLSConfig:         s.cfg.TLSConfig,
@@ -279,6 +287,10 @@ func (s *Server) httpServer(addr string) *http.Server {
 		IdleTimeout:       s.cfg.IdleTimeout,
 		// No WriteTimeout: tunneled responses (SSE, WS, downloads) are long-lived.
 	}
+	s.srvMu.Lock()
+	s.pubSrv = srv
+	s.srvMu.Unlock()
+	return srv
 }
 
 // ListenAndServeTLS runs the relay as a directly-internet-facing HTTPS server.
@@ -291,6 +303,31 @@ func (s *Server) ListenAndServeTLS(addr, certFile, keyFile string) error {
 // tests. Do not expose this directly to the internet.
 func (s *Server) ListenAndServe(addr string) error {
 	return s.httpServer(addr).ListenAndServe()
+}
+
+// Shutdown gracefully drains the relay on SIGTERM/SIGINT: it flips /readyz to
+// draining, stops accepting new connections on the public + admin listeners, waits
+// (bounded by ctx) for in-flight requests to finish, then stops the background
+// loops and performs the final usage flush via Close. Calling it instead of letting
+// the process be hard-killed is what preserves the last metered deltas and lets a
+// load balancer stop routing here before connections wind down. Safe to call once.
+func (s *Server) Shutdown(ctx context.Context) error {
+	// Flip /readyz to draining first so a load balancer stops routing new traffic
+	// here before we tear down in-flight connections.
+	s.metrics.setReady(false)
+
+	s.srvMu.Lock()
+	pub := s.pubSrv
+	s.srvMu.Unlock()
+
+	var err error
+	if pub != nil {
+		err = pub.Shutdown(ctx)
+	}
+	// Stop background loops + final usage flush. Close also shuts down the admin
+	// server and re-sets ready=false (both idempotent).
+	s.Close()
+	return err
 }
 
 // AgentCount returns the number of live agent sessions (for /healthz or metrics).

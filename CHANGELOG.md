@@ -9,6 +9,16 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Fixed
+
+- **Graceful shutdown for `vulos-relayd`** — the relay now traps `SIGTERM`/`SIGINT`
+  (what Fly and most orchestrators send on deploy/restart) and drains: it flips
+  `/readyz` to draining, stops accepting new connections on the public + admin
+  listeners, lets in-flight requests finish (bounded), and performs the final
+  metered-usage flush via `Server.Shutdown` before exiting. Previously the process
+  was hard-killed (`log.Fatal` → `os.Exit`), so the last usage deltas were lost and
+  a rolling restart could drop live requests. Added `Server.Shutdown(ctx)`.
+
 ## [0.2.0] — 2026-07-06
 
 The **sovereign Go reverse tunnel** lands and hardens. `0.1.0` was a pure JS SDK;
