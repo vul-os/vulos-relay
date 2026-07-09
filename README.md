@@ -10,7 +10,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/vul-os/vulos-relay/actions/workflows/ci.yml/badge.svg)](https://github.com/vul-os/vulos-relay/actions/workflows/ci.yml)
 
-<sub><img src="docs/assets/vulos-logo.png" height="14" alt="VulOS"> Part of <strong><a href="https://vulos.org">VulOS</a></strong> — the open, self-hostable web OS &amp; app suite. Runs standalone, or combined under one login by <a href="https://vulos.org">Vulos Workspace</a>.</sub>
+<sub><img src="docs/assets/vulos-logo.png" height="14" alt="VulOS"> Part of <strong><a href="https://vulos.org">VulOS</a></strong> — the open, self-hostable web OS &amp; app suite. Runs standalone, or as an app hosted by the Vulos OS.</sub>
 
 *Vulos — rooted in **vula**, the Zulu and Xhosa word for **open**.*
 
@@ -60,7 +60,7 @@ deliverables**:
 ## Part of VulOS
 
 **VulOS** is an open, self-hostable web OS + app suite. Each product is
-self-hostable on its own, and combined under one login by **Vulos Workspace**:
+self-hostable on its own, and hosted as an app by the **Vulos OS**:
 
 | Product | What it is |
 |---------|------------|
@@ -69,19 +69,20 @@ self-hostable on its own, and combined under one login by **Vulos Workspace**:
 | **Vulos Meet** | Video meetings (LiveKit SFU) |
 | **Vulos Office** | Documents: docs, sheets, slides, PDF |
 | **Vulos Relay** | **← this repo** — sovereign connectivity fabric: `@vulos/relay-client` SDK + a self-hosted Go reverse-tunnel |
-| **Vulos Workspace** | The open suite shell (one login, app switcher, admin) |
-| **Vulos OS** | The web-native desktop |
+| **Vulos Workspace** | An OS-hosted productivity hub consolidating Mail, Office, Talk & Meet |
+| **Vulos OS** | The web-native desktop (the shell that hosts the suite apps) |
 
 **Relay's role:** it is the connectivity fabric the rest of the suite is built
 on. The SDK is consumed directly by the VulOS web surfaces — the
 [Vulos OS shell](https://github.com/vul-os/vulos),
 [Vulos Office](https://github.com/vul-os/vulos-office), and
 [Vulos Talk](https://github.com/vul-os/vulos-talk) — to power real-time
-collaboration. [Vulos Workspace](https://github.com/vul-os/vulos-workspace)
-surfaces Relay as a first-class app in its launcher; it links to and embeds
+collaboration. The [Vulos Workspace](https://github.com/vul-os/vulos-workspace)
+hub app surfaces Relay-powered surfaces first-class; it links to and embeds
 products but never imports their code, so the seams stay clean.
 
-Relay runs standalone **and** is combined by Vulos Workspace. The client is a
+Relay runs standalone **and** as an app hosted by the Vulos OS (the OS is the
+shell; the Workspace hub app can surface Relay-powered surfaces). The client is a
 plain npm package with no Vulos-specific runtime dependency — point it at any
 backend that implements the peering contract and it works on its own.
 

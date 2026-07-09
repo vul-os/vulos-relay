@@ -1,6 +1,6 @@
 # @vulos/relay-client
 
-> <img src="../docs/assets/vulos-logo.png" height="14" alt="VulOS"> Part of **[VulOS](https://vulos.org)** — the open, self-hostable web OS &amp; app suite. This is the client SDK for **Vulos Relay**, the suite's connectivity fabric. Runs standalone, or combined under one login by Vulos Workspace.
+> <img src="../docs/assets/vulos-logo.png" height="14" alt="VulOS"> Part of **[VulOS](https://vulos.org)** — the open, self-hostable web OS &amp; app suite. This is the client SDK for **Vulos Relay**, the suite's connectivity fabric. Runs standalone, or as an app hosted by the Vulos OS.
 
 MIT-licensed JS client for the Vulos peer-fabric relay. Shared by every
 VulOS web surface (the Vulos OS shell, `vulos-office`, `vulos-talk`); previously
@@ -15,12 +15,12 @@ It does not bundle a server.
 
 **Vulos Relay** is the connectivity fabric of the [VulOS](https://vulos.org)
 suite — open, self-hostable products (Mail, Talk, Meet, Office, Relay,
-Workspace, OS), each usable alone and combined under one login by **Vulos
-Workspace**. This SDK is consumed directly by the suite's web surfaces (the Vulos
-OS shell, Vulos Office, Vulos Talk); Workspace surfaces Relay as a first-class
-app but never imports product code. The package has no Vulos-specific runtime
+Workspace, OS), each usable alone and hosted as apps by the **Vulos OS**
+(the shell). This SDK is consumed directly by the suite's web surfaces (the Vulos
+OS shell, Vulos Office, Vulos Talk); the Workspace hub app surfaces Relay-powered
+surfaces but never imports product code. The package has no Vulos-specific runtime
 dependency — it **runs standalone** against any backend that implements the
-peering contract, **and** slots into the Workspace-combined suite.
+peering contract, **and** slots into the OS-hosted suite.
 
 ## Install
 
