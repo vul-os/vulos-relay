@@ -102,6 +102,10 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 	s.meter.addSession(sess.accountID)
 
 	// Cap request body size (bounds memory / abuse); streaming still works up to cap.
+	// Hold a reference to the counting wrapper so we can distinguish a
+	// body-too-large overflow (→ 413) from a genuine gateway fault (→ 502) after the
+	// forward write fails (CONSOLIDATION A-1).
+	var bodyCounter *countingReadCloser
 	if r.Body != nil {
 		r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxRequestBytes)
 		// Meter inbound (request) bytes for the account, and always count them into
@@ -110,7 +114,8 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 		if s.meter.enabled() {
 			acct = sess.accountID
 		}
-		r.Body = &countingReadCloser{rc: r.Body, meter: s.meter, account: acct, metrics: s.metrics}
+		bodyCounter = &countingReadCloser{rc: r.Body, meter: s.meter, account: acct, metrics: s.metrics}
+		r.Body = bodyCounter
 	}
 
 	// Open a stream into the agent for this one request.
@@ -150,8 +155,23 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Write the request to the agent over the stream.
+	// Write the request to the agent over the stream. If the write fails because
+	// the inbound body exceeded MaxRequestBytes, MaxBytesReader surfaces a
+	// *http.MaxBytesError; return a clean 413 (with the limit echoed) so the box UI
+	// can tell the user "file too big for a single upload" instead of a confusing
+	// gateway error. Any other write error is a genuine tunnel/gateway fault (502).
+	// (CONSOLIDATION A-1)
 	if err := outReq.Write(stream); err != nil {
+		// req.Write wraps the body-read failure in an unexported
+		// http.requestBodyReadError that does NOT unwrap to *http.MaxBytesError, so
+		// we consult the counting wrapper (which saw the read error at the source)
+		// rather than errors.As on this err.
+		if bodyCounter != nil && bodyCounter.overLimit {
+			s.metrics.request(outcomeBadGateway)
+			w.Header().Set("Connection", "close")
+			http.Error(w, fmt.Sprintf("request body too large (limit %d bytes)", s.cfg.MaxRequestBytes), http.StatusRequestEntityTooLarge)
+			return
+		}
 		s.metrics.request(outcomeBadGateway)
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return

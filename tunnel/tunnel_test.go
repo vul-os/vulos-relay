@@ -485,7 +485,9 @@ func TestStreamLimit(t *testing.T) {
 	}
 }
 
-// TestRequestBodyCap: request bodies over MaxRequestBytes are cut off.
+// TestRequestBodyCap: request bodies over MaxRequestBytes are cut off AND the
+// public client gets a clean 413 Payload Too Large (CONSOLIDATION A-1), not a
+// truncated/confusing gateway error.
 func TestRequestBodyCap(t *testing.T) {
 	// The handler reports the bytes it received back in the response body, so the
 	// test reads it from the response (no shared state).
@@ -513,11 +515,50 @@ func TestRequestBodyCap(t *testing.T) {
 	}
 	rb, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	// The local target must NOT have received the full body. It reports the byte
-	// count it read in the response body.
+	// Overflow must surface as 413 (not 200 with a truncated body, not 502).
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("overflow status = %d, want 413; body=%q", resp.StatusCode, string(rb))
+	}
+	// The local target must NOT have received the full body: the body count (if any
+	// leaked into the 413 body accounting) is irrelevant — the box app never saw a
+	// completed >cap body. Sanity-check the error body echoes the limit.
+	if !strings.Contains(string(rb), "1024") {
+		t.Fatalf("413 body should echo the limit; got %q", string(rb))
+	}
+}
+
+// TestRequestBodyUnderCap: a body at/under MaxRequestBytes streams through intact
+// (the cap does not block legitimate uploads). (CONSOLIDATION A-1)
+func TestRequestBodyUnderCap(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		fmt.Fprintf(w, "%d", len(b))
+	}))
+	defer target.Close()
+
+	store, _ := server.NewStaticTokenStore(defaultGrants())
+	srv, _ := server.New(server.Config{
+		Domain: testDomain, Tokens: store, EnablePathMode: true,
+		MaxRequestBytes: 4096,
+	})
+	relay := httptest.NewServer(srv.Handler())
+	defer relay.Close()
+	a := startAgent(t, relay.URL, testToken, testName, localAddr(target.URL))
+	waitConnected(t, a)
+
+	body := strings.Repeat("y", 4096) // exactly at the cap
+	resp, err := http.Post(relay.URL+"/t/"+testName+"/", "text/plain", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	rb, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("at-cap upload status = %d, want 200; body=%q", resp.StatusCode, string(rb))
+	}
 	var received int
 	fmt.Sscanf(string(rb), "%d", &received)
-	if received > 1024 {
-		t.Fatalf("body cap not enforced: local received %d bytes", received)
+	if received != 4096 {
+		t.Fatalf("box received %d bytes, want 4096 (full body must pass under cap)", received)
 	}
 }

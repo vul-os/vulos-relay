@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -286,6 +288,13 @@ type countingReadCloser struct {
 	meter   *meter
 	account string
 	metrics *metrics
+
+	// overLimit is set when a read observed a *http.MaxBytesError, i.e. the inbound
+	// body exceeded MaxRequestBytes. The proxy checks this after a failed body
+	// forward to surface a clean 413 instead of a generic 502 (CONSOLIDATION A-1).
+	// req.Write wraps the read error in an unexported http.requestBodyReadError that
+	// does NOT unwrap to MaxBytesError, so we detect it at the source here.
+	overLimit bool
 }
 
 func (c *countingReadCloser) Read(p []byte) (int, error) {
@@ -295,6 +304,12 @@ func (c *countingReadCloser) Read(p []byte) (int, error) {
 			c.meter.addBytes(c.account, int64(n))
 		}
 		c.metrics.proxiedBytes(dirInbound, int64(n))
+	}
+	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			c.overLimit = true
+		}
 	}
 	return n, err
 }

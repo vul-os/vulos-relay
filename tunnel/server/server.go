@@ -149,7 +149,12 @@ func (c *Config) applyDefaults() {
 		c.MaxHeaderBytes = 64 << 10 // 64 KiB
 	}
 	if c.MaxRequestBytes == 0 {
-		c.MaxRequestBytes = 32 << 20 // 32 MiB
+		// 256 MiB. Covers the overwhelming majority of single-file uploads in one
+		// shot. The relay STREAMS the body (MaxBytesReader is a streaming wrapper,
+		// see proxy.go) so a bigger cap costs no relay RAM per request — it only
+		// bounds how long one stream may hold a slot. Unbounded is intentionally
+		// NOT offered: 0 keeps meaning "apply this default". (CONSOLIDATION A-1)
+		c.MaxRequestBytes = 256 << 20 // 256 MiB
 	}
 	if c.IdleTimeout == 0 {
 		c.IdleTimeout = 90 * time.Second

@@ -42,6 +42,12 @@ func main() {
 		pathMode   = flag.Bool("path-mode", false, "also serve /t/<name>/ fallback (no wildcard DNS)")
 		maxAgents  = flag.Int("max-agents", 256, "max concurrent agents")
 
+		// CONSOLIDATION A-1: single-request upload cap. The relay streams the body
+		// (no buffering) so this bounds per-stream duration/abuse, not RAM. 0 keeps
+		// the server-side default (256 MiB); a negative value is refused (never run
+		// unbounded). Overflow yields a clean 413 to the public client.
+		maxReqBytes = flag.Int64("max-request-bytes", envInt64("VULOS_RELAY_MAX_REQUEST_BYTES", 0), "max upload request body in bytes (0=default 256MiB); overflow returns 413")
+
 		// WAVE50-RELAY-OBSERVABILITY: the admin/metrics surface. It is SEPARATE from
 		// the public tunnel listener and serves /metrics, /healthz, /readyz. Bind it
 		// to a loopback address (default) so it is never internet-reachable; binding
@@ -73,6 +79,13 @@ func main() {
 
 	if strings.TrimSpace(*domain) == "" {
 		log.Fatal("vulos-relayd: -domain is required (or VULOS_RELAY_DOMAIN)")
+	}
+
+	// CONSOLIDATION A-1: a negative cap would be an operator error meaning
+	// "unbounded" — refuse it. 0 falls through to the server-side default (256
+	// MiB); any positive value is honored verbatim.
+	if *maxReqBytes < 0 {
+		log.Fatal("vulos-relayd: -max-request-bytes (VULOS_RELAY_MAX_REQUEST_BYTES) must be >= 0 (0=default, never unbounded)")
 	}
 
 	// Build the optional CP client. Metering/gating require both the URL and the
@@ -122,11 +135,12 @@ func main() {
 	}
 
 	srv, err := server.New(server.Config{
-		Domain:         *domain,
-		Tokens:         store,
-		EnablePathMode: *pathMode,
-		MaxAgents:      *maxAgents,
-		CP:             cp,
+		Domain:          *domain,
+		Tokens:          store,
+		EnablePathMode:  *pathMode,
+		MaxAgents:       *maxAgents,
+		MaxRequestBytes: *maxReqBytes,
+		CP:              cp,
 
 		ControlConnRate:  *ctrlRate,
 		ControlConnBurst: *ctrlBurst,
@@ -266,6 +280,16 @@ func envFloat(k string, def float64) float64 {
 	if v := os.Getenv(k); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			return f
+		}
+	}
+	return def
+}
+
+// envInt64 reads an int64 from env k, falling back to def when unset/unparseable.
+func envInt64(k string, def int64) int64 {
+	if v := os.Getenv(k); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return n
 		}
 	}
 	return def
