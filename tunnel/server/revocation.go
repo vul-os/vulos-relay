@@ -176,12 +176,25 @@ func (r *revokedList) revokeAccount(account string) {
 // the credential's cache/TTL naturally lapses. The recheck interval bounds the
 // revocation latency (see the honest-limits note in the design doc).
 
+// Expirer answers "has this token's grant TTL elapsed right now?" It is consulted
+// by the live-session revocation sweep so a token that expires WHILE its tunnel is
+// live is cut promptly (fail-closed), not merely refused on the next reconnect.
+// The staticTokenStore implements it (RELAY-TOKEN-TTL); a store without TTLs
+// (e.g. the CP install-credential store) does not, so the sweep skips the check.
+type Expirer interface {
+	// TokenExpired reports whether the grant matching the raw bearer token has a
+	// TTL that has already elapsed. A token with no expiry (or an unknown token)
+	// returns false — the sweep leaves those to the revoked-list / gate paths.
+	TokenExpired(token string) bool
+}
+
 // revocationSource is the union of revocation signals the sweep consults for one
 // live session. It is fail-closed on a DEFINITIVE revoke and fail-open on a
 // transient error (the gate distinguishes the two).
 type revocationSource struct {
-	static Revoker          // static revoked-list (may be nil / empty)
-	gate   *entitlementGate // CP revoked/404 signal via the entitlement poll (may be disabled)
+	static  Revoker          // static revoked-list (may be nil / empty)
+	expirer Expirer          // grant-TTL expiry check (may be nil when no store TTLs)
+	gate    *entitlementGate // CP revoked/404 signal via the entitlement poll (may be disabled)
 }
 
 // revoked reports whether the given live session must be cut NOW. It returns true
@@ -194,6 +207,12 @@ type revocationSource struct {
 // revoked.
 func (rs revocationSource) revoked(token, name, account string) bool {
 	if rs.static != nil && rs.static.IsRevoked(token, name, account) {
+		return true
+	}
+	// RELAY-TOKEN-TTL: an expired grant is a definitive cut for its live tunnel —
+	// the leaked long-lived token that already registered is dropped at its TTL,
+	// not left running until reconnect.
+	if rs.expirer != nil && rs.expirer.TokenExpired(token) {
 		return true
 	}
 	if rs.gate.enabled() && account != "" {

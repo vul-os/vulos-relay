@@ -12,6 +12,18 @@
 // Tokens file / env JSON format:
 //
 //	[{"token":"SECRET1","names":["box1"]}, {"token":"SECRET2","names":["a","b"]}]
+//
+// RELAY-TOKEN-TTL: a grant MAY additionally carry an expiry and a rotation
+// predecessor so agent tokens are not long-lived-forever:
+//
+//		[{"token":"NEW","previous_token":"OLD","names":["box1"],
+//		  "expires_at":"2026-12-31T00:00:00Z"}]
+//
+//	  - expires_at (RFC3339): after this the grant's tokens STOP authorizing
+//	    (fail-closed) — a leaked token self-revokes. Omit for no expiry (default).
+//	  - previous_token: the OLD token accepted alongside token DURING A ROTATION
+//	    window (mirror of CP_SHARED_SECRET_PREVIOUS). Set the new secret on token,
+//	    keep the old on previous_token until the agent has rolled, then clear it.
 package main
 
 import (

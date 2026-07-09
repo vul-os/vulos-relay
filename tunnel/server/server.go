@@ -257,6 +257,13 @@ func New(cfg Config) (*Server, error) {
 	if rv, ok := cfg.Tokens.(Revoker); ok {
 		staticRevoker = rv
 	}
+	// RELAY-TOKEN-TTL: if the token store exposes grant TTLs (the static store
+	// does; the CP install-credential store does not), let the revocation sweep
+	// cut a live tunnel whose token expires mid-session. nil when unsupported.
+	var expirer Expirer
+	if ex, ok := cfg.Tokens.(Expirer); ok {
+		expirer = ex
+	}
 	s := &Server{
 		cfg:      cfg,
 		registry: newRegistry(cfg.MaxAgents),
@@ -267,7 +274,7 @@ func New(cfg Config) (*Server, error) {
 		reqLimiter:    newRateLimiter(cfg.PublicReqRate, cfg.PublicReqBurst, cfg.RateLimitIdleTTL, cfg.RateLimitMaxKeys),
 		globalLimiter: newGlobalRateLimiter(cfg.GlobalReqRate, cfg.GlobalReqBurst),
 
-		revoke:       revocationSource{static: staticRevoker, gate: gate},
+		revoke:       revocationSource{static: staticRevoker, expirer: expirer, gate: gate},
 		revokePeriod: cfg.RevokeSweepPeriod,
 		revokeStop:   make(chan struct{}),
 
