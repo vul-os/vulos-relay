@@ -21,8 +21,17 @@
 ## What is Vulos Relay?
 
 Vulos Relay is the **sovereign connectivity fabric** for the VulOS suite — the
-single place the suite reaches sovereign, self-hosted boxes across the network
-boundary. It ships **two complementary deliverables**:
+**single reachability primitive** by which the suite reaches sovereign, self-hosted
+boxes across the network boundary. Its doctrine is **direct-first, relay-fallback**:
+a box is reached over its own public endpoint whenever it has one (near-native
+latency), and over the always-works relay tunnel otherwise (NAT/CGNAT). Relay carries
+**web-shaped traffic** — HTTP, WebSocket, and SSE — which is the request/response and
+event-stream shape every VulOS surface speaks. It is deliberately *not* the transport
+for the two workloads that have their own better path: **real-time media** rides
+WebRTC over **ICE/TURN** (mesh, or an SFU node — Relay only *registers and resolves*
+that node, §SFU-host registry, never forwards its RTP), and **mail** rides the
+dedicated HTTP **spool → forward** edge. Relay ships **two complementary
+deliverables**:
 
 - **`@vulos/relay-client`** (JS/TS SDK) — wires browser peers together with
   **WebRTC peer-to-peer data channels**, multiplexing signaling, presence, and
@@ -327,8 +336,17 @@ internet-facing:
   nonce echo, SSRF-guarded, only after auth) before clients dial it **directly** for
   near-native latency, falling back to the relay tunnel on any failure. NAT'd/CGNAT
   boxes stay on the always-works relay path. See [docs/TUNNEL.md](docs/TUNNEL.md).
-- **Bounds** — max agents, max streams/agent, request header/body caps, and
-  keepalive dead-peer detection keep memory bounded.
+- **SFU-host registry (optional, off by default)** — the same verify-then-serve
+  machinery placed onto big-call media: a box registers a self-hosted/BYO SFU worker
+  (`POST /api/meet/host/register`, endpoint verified by the **same** directprobe
+  verifier) and its clients **`resolve` a reachable SFU endpoint scoped by tunnel
+  name** for the Vulos Meet mesh→SFU escalation. Relay only registers and resolves the
+  media node — the RTP never touches it (that's ICE/TURN). Gated behind
+  `-sfu-host-registry`; inert until a box registers. See
+  [docs/TUNNEL.md](docs/TUNNEL.md#sfu-host-registry-optional-vulos-meet-phase-2-off-by-default).
+- **Bounds** — max agents, max streams/agent, request header cap, a **256 MiB
+  request-body cap** (`-max-request-bytes`, `413` on overflow), and keepalive
+  dead-peer detection keep memory bounded.
 - **Observability** — a dependency-free Prometheus `/metrics` endpoint plus
   `/healthz` / `/readyz` on a **separate loopback/token-gated admin listener** (never
   on the public tunnel), with bounded-cardinality labels and structured `slog`

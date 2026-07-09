@@ -9,6 +9,20 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Docs — verify + docs pass (verify/docs-polish-2026-07)
+
+- **README + TUNNEL.md: Relay framed as the single reachability primitive.**
+  Documented the direct-first / relay-fallback doctrine and that Relay carries
+  **web-shaped traffic** (HTTP/WS/SSE) — real-time **media** rides ICE/TURN
+  (Relay only registers/resolves the SFU node, never forwards RTP) and **mail**
+  rides the HTTP spool→forward edge. Documented the **SFU-host registry**
+  (`/api/meet/host/*`, `-sfu-host-registry`, off by default): register with the
+  same directprobe endpoint verification, **name-scoped `resolve`** so the shared
+  relay never leaks one tenant's SFU endpoint to another. Added the
+  `-max-request-bytes` (256 MiB body cap, `413` on overflow) and
+  `-sfu-host-registry` flags to the flags table. No code change; full suite
+  verified green (`go build`, `go test -race`, client vitest 236 tests / 22 files).
+
 ### Added
 
 - **Direct-IP fast path (DIRECT-IP)** — a box with a public IP/hostname can advertise

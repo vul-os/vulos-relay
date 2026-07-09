@@ -77,6 +77,44 @@ box opts in, and it is **never trusted on the box's word**:
   transport. Disable relay-wide with `Config.DisableDirect` (advertised endpoints are
   then ignored and every box is served purely over the relay tunnel).
 
+## SFU-host registry (optional, Vulos Meet Phase 2, off by default)
+
+The same **direct-first / verify-then-serve** doctrine that powers the fast path
+above is reused, verbatim, to place a **big-call SFU media node**. A self-hoster who
+wants big calls on their **own** infra installs the SFU worker next to their box (the
+in-process Pion SFU, or a co-located `vulos-meet` LiveKit server) and registers it
+here; when a call escalates past the mesh cap, the box resolves a reachable SFU
+endpoint and hands it back to the client as the join `serverUrl`. This mirrors the
+GPU streaming-host pattern (STREAM-BYO-01) and **reuses the same
+`verifyDirectEndpoint` verifier** — the nonce-echo, SSRF-guarded, DNS-rebind-defended
+ownership proof from the fast path — because it proves endpoint ownership, not "is a
+streamer", so it applies to an SFU endpoint unchanged (`tunnel/server/sfuhost.go`).
+
+```
+POST {relay}/api/meet/host/register     → 200 {host}   (VERIFIES the endpoint first)
+POST {relay}/api/meet/host/heartbeat    → 200          (refreshes a 90s TTL)
+POST {relay}/api/meet/host/deregister   → 200
+GET  {relay}/api/meet/host/resolve?name=<name> → 200 {allocation | available:false}
+```
+
+- **Off by default.** The whole registry is gated behind `-sfu-host-registry`
+  (`VULOS_RELAY_SFU_HOST_REGISTRY=1`); with it off, register/heartbeat/deregister
+  return `404` and `resolve` is naturally empty. Even enabled it is **inert until a
+  box registers** — `resolve` returns `available:false` and the caller keeps whatever
+  static `serverUrl` it already had (unchanged Phase-1 behavior).
+- **Auth mirrors the tunnel.** register/heartbeat/deregister require the **same**
+  bearer token + name grant a box uses for its tunnel, and pass the same account
+  entitlement gate (fail-closed for billed accounts; an unbilled `""` token is always
+  allowed — self-host). Verification runs **only after** auth, so an unauthorized box
+  can never make the relay probe an arbitrary target.
+- **`resolve` is SCOPED BY name.** The relay is shared across accounts, so `resolve`
+  requires a `?name=` (the box's own token-authorized tunnel name) and only ever
+  returns a host that name itself registered. An unscoped "first live host" would hand
+  box B's clients box A's SFU endpoint — a cross-tenant routing leak — so an
+  empty/unmatched name is `available:false` (fail-closed). The lookup carries no user
+  data and mutates nothing, so it is unauthenticated; the SFU's own `VULOS-MEET/1`
+  token gate is still the security boundary that admits each joiner.
+
 ## Security model (fails closed — this is internet-facing)
 
 - **Agent auth:** a per-agent **bearer token** (`Authorization: Bearer …`, also
@@ -173,6 +211,8 @@ VULOS_RELAY_TOKENS='[{"token":"SECRET1","names":["box1"]}]' \
 | `-path-mode` | | `false` | Also serve `/t/<name>/` fallback. |
 | `-cert` / `-key` | | — | Terminate TLS here (omit if behind an edge). |
 | `-max-agents` | | `256` | Max concurrent agents. |
+| `-max-request-bytes` | `VULOS_RELAY_MAX_REQUEST_BYTES` | `0` (⇒ 256 MiB) | Max public-request body in bytes; overflow returns `413`. `0` uses the 256 MiB default (covers the vast majority of single-file uploads); a negative value is refused. |
+| `-sfu-host-registry` | `VULOS_RELAY_SFU_HOST_REGISTRY=1` | `false` | Enable the Vulos Meet SFU-host registry (`/api/meet/host/*`). Off ⇒ those routes `404`. |
 
 **Admin / metrics (WAVE50-RELAY-OBSERVABILITY)** — a SEPARATE listener from the
 public tunnel, serving `/metrics`, `/healthz`, `/readyz`.
