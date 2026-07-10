@@ -9,6 +9,28 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Security — ingress-choke-point hardening (harden/deep-verify-2026-07)
+
+- **Client IP spoofing prevented at the ingress boundary.** The relay is the trust
+  boundary, so by default (directly internet-facing) it now **overwrites**
+  `X-Forwarded-For` / `X-Real-IP` / `X-Forwarded-Proto` with the observed peer
+  instead of appending to whatever a public client sent. Previously a client could
+  forge the leftmost `X-Forwarded-For` entry, spoofing the source IP the box's app
+  reads for IP allowlists, rate-limits, audit logs and geo. New
+  `-trust-proxy-headers` (`VULOS_RELAY_TRUST_PROXY_HEADERS=1`) opts into trusting a
+  fronting proxy's headers (preserve chain + honor its `X-Forwarded-Proto`) — enable
+  **only** behind a trusted TLS-terminating edge; `fly.toml` sets it (Fly's edge is
+  that proxy). Regression tests in `forwardedheaders_test.go`.
+- **Direct-endpoint SSRF: IPv6 transition-address bypass closed.** The
+  reachability/ownership probe's public-IP screen (`isPublicIP`) now unwraps IPv6
+  transition addresses — NAT64 `64:ff9b::/96`, 6to4 `2002::/16`, Teredo
+  `2001::/32` — and re-screens the embedded IPv4, plus rejects the `2001:db8::/32`
+  documentation range and additional reserved IPv4 blocks. Previously an address
+  like `64:ff9b::7f00:1` (which carries `127.0.0.1`) passed the screen and, on a
+  host with a NAT64/6to4 gateway, would let an attacker box point the relay's probe
+  at an internal service. Regression test
+  `TestDirect_isPublicIP_IPv6TransitionSSRF`.
+
 ### Docs — verify + docs pass (verify/docs-polish-2026-07)
 
 - **README + TUNNEL.md: Relay framed as the single reachability primitive.**

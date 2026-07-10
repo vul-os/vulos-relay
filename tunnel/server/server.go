@@ -44,6 +44,25 @@ type Config struct {
 	// Enable when you cannot provision wildcard DNS. Default false.
 	EnablePathMode bool
 
+	// TrustProxyHeaders controls how the forwarding headers (X-Forwarded-For /
+	// -Proto) the box's app sees are built. It is a SECURITY toggle for the ingress
+	// choke point:
+	//
+	//   false (default) — the relay is DIRECTLY internet-facing. The public client
+	//     is untrusted, so any X-Forwarded-For / X-Real-IP / X-Forwarded-Proto it
+	//     sends is DISCARDED and OVERWRITTEN with the relay's observed peer. This
+	//     prevents a client forging its apparent source IP for the box's app.
+	//
+	//   true — the relay runs behind ITS OWN trusted TLS-terminating edge/CDN (the
+	//     fly.toml deployment: Fly's proxy terminates TLS and sets XFF). In that one
+	//     topology the incoming XFF is trustworthy, so the peer (the edge) is
+	//     appended to preserve the real client chain, and the edge's
+	//     X-Forwarded-Proto is honored.
+	//
+	// Enable ONLY when a trusted proxy actually fronts the relay; enabling it while
+	// directly exposed re-opens the IP spoof.
+	TrustProxyHeaders bool
+
 	// TLS is the public listener's TLS. If nil, ServeTLS/certFile is expected, or
 	// the caller runs behind a TLS-terminating proxy and uses Serve (plain h1). For
 	// a directly-internet-facing relay, provide TLS or use ListenAndServeTLS.

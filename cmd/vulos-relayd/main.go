@@ -54,6 +54,15 @@ func main() {
 		pathMode   = flag.Bool("path-mode", false, "also serve /t/<name>/ fallback (no wildcard DNS)")
 		maxAgents  = flag.Int("max-agents", 256, "max concurrent agents")
 
+		// SECURITY: how X-Forwarded-For/-Proto shown to the box's app are built. OFF
+		// by default (the relay is the internet-facing trust boundary) => a public
+		// client's forwarding headers are DISCARDED and overwritten with the observed
+		// peer, so a client cannot spoof its source IP. Turn ON only when a trusted
+		// TLS-terminating edge/CDN fronts the relay (the fly.toml deployment: Fly's
+		// proxy sets XFF), so the real client chain is preserved. Enabling it while
+		// directly exposed re-opens the spoof.
+		trustProxy = flag.Bool("trust-proxy-headers", envOr("VULOS_RELAY_TRUST_PROXY_HEADERS", "") == "1", "trust X-Forwarded-* from a fronting proxy (enable ONLY behind a trusted TLS-terminating edge; off=overwrite to prevent client IP spoofing)")
+
 		// Vulos Meet SFU Phase 2 (BYO / self-host): the SFU-host registry lets a
 		// token-authorized box register a VERIFIED SFU endpoint (POST
 		// /api/meet/host/register) so big calls escalate to media on the operator's
@@ -154,12 +163,13 @@ func main() {
 	}
 
 	srv, err := server.New(server.Config{
-		Domain:          *domain,
-		Tokens:          store,
-		EnablePathMode:  *pathMode,
-		MaxAgents:       *maxAgents,
-		MaxRequestBytes: *maxReqBytes,
-		CP:              cp,
+		Domain:            *domain,
+		Tokens:            store,
+		EnablePathMode:    *pathMode,
+		TrustProxyHeaders: *trustProxy,
+		MaxAgents:         *maxAgents,
+		MaxRequestBytes:   *maxReqBytes,
+		CP:                cp,
 
 		EnableSFUHostRegistry: *sfuHostRegistry,
 
@@ -178,6 +188,11 @@ func main() {
 
 	log.Printf("vulos-relayd: listening on %s domain=%s pathMode=%v agents<=%d",
 		*addr, *domain, *pathMode, *maxAgents)
+	if *trustProxy {
+		log.Printf("vulos-relayd: TRUSTING X-Forwarded-* from a fronting proxy (ensure a trusted TLS-terminating edge fronts this relay)")
+	} else {
+		log.Printf("vulos-relayd: OVERWRITING X-Forwarded-* with observed peer (directly internet-facing; client IP spoofing prevented)")
+	}
 
 	// SIGTERM/SIGINT trigger a graceful drain (Fly + most orchestrators send
 	// SIGTERM on deploy/restart): stop accepting new connections, let in-flight

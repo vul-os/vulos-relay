@@ -154,10 +154,55 @@ func TestDirect_isPublicIP(t *testing.T) {
 			t.Errorf("isPublicIP(%q) = true, want false", s)
 		}
 	}
-	public := []string{"1.1.1.1", "8.8.8.8", "203.0.113.5", "2606:4700:4700::1111"}
+	public := []string{"1.1.1.1", "8.8.8.8", "2606:4700:4700::1111"}
 	for _, s := range public {
 		if ip := parseIPHelper(s); !isPublicIP(ip) {
 			t.Errorf("isPublicIP(%q) = false, want true", s)
+		}
+	}
+}
+
+// TestDirect_isPublicIP_IPv6TransitionSSRF is a security-contract regression: an
+// IPv6 transition address (NAT64 / 6to4 / Teredo) that EMBEDS a private/loopback
+// IPv4 must NOT be treated as public. On a host with a NAT64/6to4 gateway such an
+// address routes to an INTERNAL IPv4 target, so screening only the outer IPv6
+// (which Go's stdlib predicates report as global-unicast) is an SSRF bypass. The
+// embedded v4 must be extracted and re-screened.
+func TestDirect_isPublicIP_IPv6TransitionSSRF(t *testing.T) {
+	mustBlock := []struct{ addr, why string }{
+		{"64:ff9b::7f00:1", "NAT64 well-known prefix embedding 127.0.0.1 (loopback)"},
+		{"64:ff9b::a00:1", "NAT64 embedding 10.0.0.1 (RFC1918)"},
+		{"64:ff9b::c0a8:1", "NAT64 embedding 192.168.0.1 (RFC1918)"},
+		{"64:ff9b::a9fe:a9fe", "NAT64 embedding 169.254.169.254 (cloud metadata)"},
+		{"64:ff9b::6440:1", "NAT64 embedding 100.64.0.1 (CGNAT)"},
+		{"2002:7f00:1::1", "6to4 embedding 127.0.0.1 (loopback)"},
+		{"2002:a00:1::1", "6to4 embedding 10.0.0.1 (RFC1918)"},
+		{"2002:a9fe:a9fe::1", "6to4 embedding 169.254.169.254 (cloud metadata)"},
+		{"2001:db8::1", "IPv6 documentation range (never a real target)"},
+	}
+	for _, tc := range mustBlock {
+		ip := parseIPHelper(tc.addr)
+		if ip == nil {
+			t.Fatalf("test bug: %q did not parse", tc.addr)
+		}
+		if isPublicIP(ip) {
+			t.Errorf("SSRF bypass: isPublicIP(%q) = true, want false — %s", tc.addr, tc.why)
+		}
+	}
+
+	// A NAT64/6to4 address embedding a genuinely PUBLIC v4 stays reachable (we must
+	// not over-block legitimate transition traffic to public hosts).
+	mustAllow := []struct{ addr, why string }{
+		{"64:ff9b::808:808", "NAT64 embedding 8.8.8.8 (public)"},
+		{"2002:0808:0808::1", "6to4 embedding 8.8.8.8 (public)"},
+	}
+	for _, tc := range mustAllow {
+		ip := parseIPHelper(tc.addr)
+		if ip == nil {
+			t.Fatalf("test bug: %q did not parse", tc.addr)
+		}
+		if !isPublicIP(ip) {
+			t.Errorf("over-block: isPublicIP(%q) = false, want true — %s", tc.addr, tc.why)
 		}
 	}
 }

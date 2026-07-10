@@ -242,6 +242,15 @@ func screenPublicHost(host string) error {
 // loopback, private (RFC1918), link-local, CGNAT (RFC6598 100.64/10), the cloud
 // metadata IP (169.254.169.254 is link-local so already covered), IPv6 ULA
 // (fc00::/7), unspecified, or multicast.
+//
+// It ALSO screens IPv6 transition mechanisms that embed an IPv4 address, because
+// on a host with a NAT64/6to4 gateway an address like 64:ff9b::7f00:1 (the
+// well-known NAT64 prefix carrying 127.0.0.1) would otherwise route to an
+// INTERNAL IPv4 target — an SSRF bypass that Go's stdlib predicates do not catch
+// (To4() returns nil for these, so the v4 checks below never fire). We extract
+// the embedded v4 and re-screen it. Teredo (2001::/32), 6to4 (2002::/16) and the
+// NAT64 well-known prefix (64:ff9b::/96) are all covered; any other IPv6 that is
+// not global-unicast is refused outright.
 func isPublicIP(ip net.IP) bool {
 	if ip == nil {
 		return false
@@ -255,13 +264,92 @@ func isPublicIP(ip net.IP) bool {
 	}
 	// CGNAT / shared address space 100.64.0.0/10 (RFC6598) — not IsPrivate() in Go.
 	if v4 := ip.To4(); v4 != nil {
-		if v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
-			return false
-		}
-		// 0.0.0.0/8 "this network".
-		if v4[0] == 0 {
-			return false
-		}
+		return isPublicV4(v4)
+	}
+	// IPv6 from here on. Anything that is not global-unicast (e.g. reserved,
+	// discard-only, documentation) is not a public dial target. Note: fc00::/7 ULA
+	// is IsPrivate (handled above) but IsGlobalUnicast returns true for it, so this
+	// check comes AFTER the IsPrivate screen, not instead of it.
+	if !ip.IsGlobalUnicast() {
+		return false
+	}
+	// IPv6 transition mechanisms that embed an IPv4 address must be re-screened
+	// against that embedded v4 — a NAT64/6to4 gateway would otherwise route them to
+	// an internal IPv4 host.
+	if embedded := embeddedV4(ip); embedded != nil {
+		return isPublicV4(embedded)
+	}
+	// 2001:db8::/32 documentation range (never a real target).
+	if len(ip) == net.IPv6len && ip[0] == 0x20 && ip[1] == 0x01 && ip[2] == 0x0d && ip[3] == 0xb8 {
+		return false
 	}
 	return true
+}
+
+// isPublicV4 screens a 4-byte IPv4 address for the non-public ranges Go's stdlib
+// predicates miss (CGNAT + 0.0.0.0/8). It assumes loopback/private/link-local
+// were already screened by the caller's stdlib checks, but re-applies them here so
+// it is also safe to call on an IPv4 extracted from an IPv6 transition address.
+func isPublicV4(v4 net.IP) bool {
+	v4 = v4.To4()
+	if v4 == nil {
+		return false
+	}
+	// Re-apply the stdlib predicates: an embedded v4 pulled out of an IPv6
+	// transition address never went through them.
+	if v4.IsLoopback() || v4.IsUnspecified() || v4.IsPrivate() ||
+		v4.IsLinkLocalUnicast() || v4.IsLinkLocalMulticast() || v4.IsMulticast() {
+		return false
+	}
+	// CGNAT / shared address space 100.64.0.0/10 (RFC6598) — not IsPrivate() in Go.
+	if v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
+		return false
+	}
+	// 0.0.0.0/8 "this network".
+	if v4[0] == 0 {
+		return false
+	}
+	// 192.0.0.0/24 IETF protocol assignments, 192.0.2.0/24 / 198.51.100.0/24 /
+	// 203.0.113.0/24 documentation, 198.18.0.0/15 benchmarking, 240.0.0.0/4 reserved.
+	switch {
+	case v4[0] == 192 && v4[1] == 0 && v4[2] == 0:
+		return false
+	case v4[0] == 192 && v4[1] == 0 && v4[2] == 2:
+		return false
+	case v4[0] == 198 && v4[1] == 51 && v4[2] == 100:
+		return false
+	case v4[0] == 203 && v4[1] == 0 && v4[2] == 113:
+		return false
+	case v4[0] == 198 && (v4[1] == 18 || v4[1] == 19):
+		return false
+	case v4[0] >= 240:
+		return false
+	}
+	return true
+}
+
+// embeddedV4 extracts the IPv4 address embedded in an IPv6 transition-mechanism
+// address, or nil if there is none. It handles the NAT64 well-known prefix
+// (64:ff9b::/96), 6to4 (2002::/16 carries the v4 in bytes 2..5) and Teredo
+// (2001:0000::/32 carries the client v4, XOR-obfuscated, in the last 4 bytes).
+func embeddedV4(ip net.IP) net.IP {
+	ip = ip.To16()
+	if ip == nil {
+		return nil
+	}
+	// NAT64 well-known prefix 64:ff9b::/96 — the low 32 bits are the v4 target.
+	if ip[0] == 0x00 && ip[1] == 0x64 && ip[2] == 0xff && ip[3] == 0x9b &&
+		ip[4] == 0 && ip[5] == 0 && ip[6] == 0 && ip[7] == 0 &&
+		ip[8] == 0 && ip[9] == 0 && ip[10] == 0 && ip[11] == 0 {
+		return net.IPv4(ip[12], ip[13], ip[14], ip[15]).To4()
+	}
+	// 6to4 2002::/16 — the embedded v4 is bytes 2..5.
+	if ip[0] == 0x20 && ip[1] == 0x02 {
+		return net.IPv4(ip[2], ip[3], ip[4], ip[5]).To4()
+	}
+	// Teredo 2001:0000::/32 — the client v4 is the last 4 bytes, XORed with 0xff.
+	if ip[0] == 0x20 && ip[1] == 0x01 && ip[2] == 0x00 && ip[3] == 0x00 {
+		return net.IPv4(ip[12]^0xff, ip[13]^0xff, ip[14]^0xff, ip[15]^0xff).To4()
+	}
+	return nil
 }

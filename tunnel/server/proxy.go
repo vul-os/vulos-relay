@@ -171,7 +171,7 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 	outReq := r.Clone(r.Context())
 	outReq.URL.Path = trimmedPath
 	outReq.RequestURI = ""
-	sanitizeRequestHeaders(outReq, r)
+	sanitizeRequestHeaders(outReq, r, s.cfg.TrustProxyHeaders)
 
 	// WebSocket upgrade passthrough: if the client is upgrading, we cannot use the
 	// normal buffered response path — we hijack and splice raw bytes.
@@ -299,28 +299,62 @@ func (s *Server) publicURL(name string) string {
 
 // sanitizeRequestHeaders strips hop-by-hop headers and sets X-Forwarded-* so the
 // agent's local app sees correct client metadata without trusting agent input.
-func sanitizeRequestHeaders(out, orig *http.Request) {
+//
+// SECURITY (ingress-choke-point spoofing): the relay is the trust boundary. A
+// PUBLIC client is untrusted and can send ANY X-Forwarded-For / X-Real-IP /
+// X-Forwarded-Proto value. If the relay merely APPENDED to a client-supplied XFF,
+// that forged value would be the leftmost entry — exactly what the box's app reads
+// as "the real client IP" for IP allowlists, rate-limits, audit logs and geo.
+//
+// Default posture (trustProxy=false — the relay is DIRECTLY internet-facing, e.g.
+// ListenAndServeTLS): OVERWRITE the forwarding headers with the OBSERVED peer.
+// Whatever the client sent is discarded; the app sees only the relay's own
+// verdict. This is the safe default for the single reachability ingress.
+//
+// trustProxy=true: the relay runs behind ITS OWN trusted TLS-terminating edge/CDN
+// (e.g. Fly's proxy, the fly.toml deployment) which has already validated and set
+// XFF. In that ONE topology the incoming XFF is trustworthy, so we append the
+// peer (the edge) to preserve the real client chain. Only enable this when a
+// trusted proxy actually fronts the relay — enabling it while directly exposed
+// re-opens the spoof.
+func sanitizeRequestHeaders(out, orig *http.Request, trustProxy bool) {
 	stripHopByHop(out.Header)
 
 	clientIP, _, _ := net.SplitHostPort(orig.RemoteAddr)
 	if clientIP == "" {
 		clientIP = orig.RemoteAddr
 	}
-	// Append to any existing X-Forwarded-For chain.
-	if prior := out.Header.Get("X-Forwarded-For"); prior != "" {
-		out.Header.Set("X-Forwarded-For", prior+", "+clientIP)
+
+	if trustProxy {
+		// Trusted upstream edge already set XFF; append the peer (the edge) so the
+		// real client chain is preserved.
+		if prior := orig.Header.Get("X-Forwarded-For"); prior != "" {
+			out.Header.Set("X-Forwarded-For", prior+", "+clientIP)
+		} else {
+			out.Header.Set("X-Forwarded-For", clientIP)
+		}
 	} else {
+		// Directly internet-facing: the client is untrusted. OVERWRITE any
+		// client-supplied forwarding headers with the observed peer so a forged XFF
+		// prefix cannot spoof the source IP the box's app sees. Also drop X-Real-IP
+		// (a common alias) so it cannot smuggle a spoofed value past the app.
 		out.Header.Set("X-Forwarded-For", clientIP)
+		out.Header.Set("X-Real-IP", clientIP)
 	}
 	out.Header.Set("X-Forwarded-Host", orig.Host)
+
 	scheme := "https"
-	if orig.TLS == nil && orig.Header.Get("X-Forwarded-Proto") == "" {
-		// Behind a terminating proxy TLS==nil; trust its X-Forwarded-Proto if set,
-		// else assume http for a directly-plain listener.
+	switch {
+	case orig.TLS != nil:
+		// The relay itself terminated TLS — authoritative.
+		scheme = "https"
+	case trustProxy && orig.Header.Get("X-Forwarded-Proto") != "":
+		// Behind a trusted terminating proxy: honor its X-Forwarded-Proto.
+		scheme = orig.Header.Get("X-Forwarded-Proto")
+	case orig.TLS == nil:
+		// Directly plain (no trusted proxy): a client-supplied X-Forwarded-Proto is
+		// untrusted and ignored; assume http.
 		scheme = "http"
-	}
-	if xfp := orig.Header.Get("X-Forwarded-Proto"); xfp != "" {
-		scheme = xfp
 	}
 	out.Header.Set("X-Forwarded-Proto", scheme)
 }

@@ -26,6 +26,11 @@ primary_region = "PLACEHOLDER"   # Fly region code (e.g. "iad", "lhr", "fra")
   # -domain is REQUIRED (vulos-relayd refuses to start without it). Set the real
   # base relay domain here or via `fly secrets set VULOS_RELAY_DOMAIN=...`.
   VULOS_RELAY_DOMAIN = "PLACEHOLDER"   # e.g. relay.example.com
+  # Fly's edge terminates TLS and sets X-Forwarded-For/-Proto, so it is a TRUSTED
+  # fronting proxy: trust its forwarding headers to preserve the real client chain
+  # the box's app sees. (Default OFF overwrites XFF with the observed peer, which is
+  # the correct posture ONLY when the relay is directly internet-facing, NOT here.)
+  VULOS_RELAY_TRUST_PROXY_HEADERS = "1"
   # Uncomment to also serve /t/<name>/ when wildcard DNS is unavailable:
   # VULOS_RELAY_PATH_MODE = "1"        # NOTE: cmd flag is -path-mode; wire via CMD if needed
 

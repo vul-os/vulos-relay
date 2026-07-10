@@ -149,10 +149,25 @@ GET  {relay}/api/meet/host/resolve?name=<name> → 200 {allocation | available:f
   previously-valid credential is a definitive revoke (reuses the existing entitlement
   poll — no new CP round trip). Connect stays fail-closed; mid-session stays fail-open
   on a transient CP blip but cuts on a definitive revoke.
-- **Header hygiene:** hop-by-hop headers are stripped both ways; `X-Forwarded-For`,
-  `X-Forwarded-Host`, `X-Forwarded-Proto` are set from the real client (the agent's
-  input is never trusted to name itself). Internal errors are never leaked to
-  clients (generic `502`/`403`/etc.).
+- **Header hygiene / no client IP spoofing:** hop-by-hop headers are stripped both
+  ways. The relay is the **ingress trust boundary**, so by default (directly
+  internet-facing) it **overwrites** `X-Forwarded-For` / `X-Real-IP` /
+  `X-Forwarded-Proto` with the **observed peer** — a public client cannot forge the
+  source IP the box's app reads for allowlists/rate-limits/audit/geo.
+  `-trust-proxy-headers` (env `VULOS_RELAY_TRUST_PROXY_HEADERS=1`) flips this to
+  **trust a fronting proxy**: the incoming `X-Forwarded-For` is preserved and the
+  peer (the edge) is appended, and the edge's `X-Forwarded-Proto` is honored. Enable
+  it **only** when a trusted TLS-terminating edge/CDN actually fronts the relay (the
+  Fly deployment — `fly.toml` sets it); enabling it while directly exposed re-opens
+  the spoof. Internal errors are never leaked to clients (generic `502`/`403`/etc.).
+- **Direct-endpoint SSRF guard (relay side):** before the relay surfaces a
+  box-advertised direct/SFU endpoint it **probes** it, and the probe is
+  screened both at parse time and at connect time (resolved-IP re-screen defeats
+  DNS-rebind), refusing loopback/private/link-local/CGNAT/metadata/documentation
+  targets. The screen also unwraps **IPv6 transition addresses** (NAT64
+  `64:ff9b::/96`, 6to4 `2002::/16`, Teredo `2001::/32`) and re-screens the embedded
+  IPv4, so an address like `64:ff9b::7f00:1` (which carries `127.0.0.1`) cannot be
+  used to reach an internal service through a NAT64/6to4 gateway.
 - **TLS everywhere:** run the relay behind an edge/CDN that terminates TLS, or give
   it `-cert`/`-key` to terminate itself.
 
@@ -209,6 +224,7 @@ VULOS_RELAY_TOKENS='[{"token":"SECRET1","names":["box1"]}]' \
 | `-domain` | `VULOS_RELAY_DOMAIN` | — (required) | Base relay domain. |
 | `-tokens-file` | `VULOS_RELAY_TOKENS` (inline JSON) | — (required unless `-cp-token-store`) | Agent grants. |
 | `-path-mode` | | `false` | Also serve `/t/<name>/` fallback. |
+| `-trust-proxy-headers` | `VULOS_RELAY_TRUST_PROXY_HEADERS=1` | `false` | Trust `X-Forwarded-*` from a fronting proxy. **Off** (default, directly internet-facing) overwrites them with the observed peer so a client cannot spoof its source IP. Enable **only** behind a trusted TLS-terminating edge/CDN (the Fly deployment sets it). |
 | `-cert` / `-key` | | — | Terminate TLS here (omit if behind an edge). |
 | `-max-agents` | | `256` | Max concurrent agents. |
 | `-max-request-bytes` | `VULOS_RELAY_MAX_REQUEST_BYTES` | `0` (⇒ 256 MiB) | Max public-request body in bytes; overflow returns `413`. `0` uses the 256 MiB default (covers the vast majority of single-file uploads); a negative value is refused. |
