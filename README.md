@@ -332,11 +332,16 @@ internet-facing:
 - **Token / credential revocation** — a file/env revoked-list plus a runtime revoke
   API; revoked credentials are refused at connect and any live tunnel is dropped by a
   periodic revocation sweep.
-- **Direct-IP fast path (optional)** — a box with a public IP can advertise a direct
-  `https://` endpoint; the relay **verifies it** (reachable + ownership-proven by a
-  nonce echo, SSRF-guarded, only after auth) before clients dial it **directly** for
-  near-native latency, falling back to the relay tunnel on any failure. NAT'd/CGNAT
-  boxes stay on the always-works relay path. See [docs/TUNNEL.md](docs/TUNNEL.md).
+- **Direct-IP fast path (optional, and preferred)** — a box with a public IP can
+  advertise a direct `https://` endpoint; the relay **verifies it** (reachable +
+  ownership-proven by a nonce echo, SSRF-guarded, only after auth) before clients dial it
+  **directly** for near-native latency, falling back to the relay tunnel on any failure.
+  NAT'd/CGNAT boxes stay on the always-works relay path. The direct path is the preferred
+  one under the ratified trust/cost model: it is both **cheaper** (unmetered — bytes never
+  touch the relay) and **more private** (end-to-end to the box), so a *hosted* relay
+  carries plaintext only for NAT'd boxes with no direct path — for relay-blindness there,
+  use a verified direct endpoint or a self-run relay. See
+  [docs/SECURITY.md](docs/SECURITY.md) and [docs/TUNNEL.md](docs/TUNNEL.md).
 - **SFU-host registry (optional, off by default)** — the same verify-then-serve
   machinery placed onto big-call media: a box registers a self-hosted/BYO SFU worker
   (`POST /api/meet/host/register`, endpoint verified by the **same** directprobe
