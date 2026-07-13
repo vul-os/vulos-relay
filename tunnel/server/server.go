@@ -371,9 +371,39 @@ func (s *Server) httpServer(addr string) *http.Server {
 	return srv
 }
 
-// ListenAndServeTLS runs the relay as a directly-internet-facing HTTPS server.
+// ListenAndServeTLS runs the relay as a directly-internet-facing HTTPS server,
+// terminating TLS itself from certFile/keyFile.
 func (s *Server) ListenAndServeTLS(addr, certFile, keyFile string) error {
-	return s.httpServer(addr).ListenAndServeTLS(certFile, keyFile)
+	srv := s.httpServer(addr)
+	// Self-terminating path: pin an explicit TLS floor + ALPN instead of inheriting
+	// whatever the Go stdlib happens to default to. An operator-supplied
+	// cfg.TLSConfig is honored verbatim (pass-through).
+	srv.TLSConfig = s.tlsConfigForSelfTerminate()
+	return srv.ListenAndServeTLS(certFile, keyFile)
+}
+
+// tlsConfigForSelfTerminate resolves the TLS config used when the relay
+// terminates TLS itself (ListenAndServeTLS with -cert/-key). It returns the
+// operator-supplied cfg.TLSConfig verbatim when set (pass-through, untouched),
+// otherwise a hardened default.
+func (s *Server) tlsConfigForSelfTerminate() *tls.Config {
+	if s.cfg.TLSConfig != nil {
+		return s.cfg.TLSConfig
+	}
+	return hardenedTLSConfig()
+}
+
+// hardenedTLSConfig is the explicit floor applied when the relay TERMINATES TLS
+// itself and the operator supplied no tls.Config of their own. It pins a TLS 1.2
+// minimum (the safe interop floor — TLS 1.0/1.1 are disallowed) and advertises
+// HTTP/2 + HTTP/1.1 via ALPN, rather than leaning on Go-version-dependent stdlib
+// defaults. On the Fly deployment the edge terminates TLS, so this path is unused
+// there; it exists to give a self-hoster using -cert/-key a sane, pinned posture.
+func hardenedTLSConfig() *tls.Config {
+	return &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		NextProtos: []string{"h2", "http/1.1"},
+	}
 }
 
 // ListenAndServe runs the relay as plain HTTP — ONLY for use behind a TLS-
