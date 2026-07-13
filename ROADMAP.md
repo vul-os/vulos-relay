@@ -62,6 +62,19 @@ priorities shift with Vulos OS milestones.
   Vulos tabs on a given origin to deduplicate endpoint probes and the offline
   write queue.
 
+### Sovereign reverse tunnel (Go) — planned, not implemented
+- **SNI / TLS passthrough for NAT'd boxes** — route on SNI and forward the encrypted
+  stream for the box to terminate, so a NAT'd box↔user leg is opaque even to a
+  *hosted* relay (extends the direct path's end-to-end property to NAT'd boxes). Today
+  a hosted relay terminates TLS and sees that leg in plaintext; the direct path and
+  self-run relays are the current answers for relay-blindness. See
+  [docs/SECURITY.md](docs/SECURITY.md#planned-hardening).
+- **True idle-session eviction** — the adaptive keepalive slows an idle tunnel's
+  heartbeat but never closes it; evicting genuinely idle tunnels outright is a separate,
+  unbuilt change.
+- **Egress-based billing model** — the meter currently counts proxied body bytes; a
+  shift to egress-based billing is a future direction, not current behavior.
+
 ---
 
 ## Out of scope (frozen invariants)
@@ -73,4 +86,4 @@ priorities shift with Vulos OS milestones.
 
 ---
 
-_Last updated: 2026-07-06_
+_Last updated: 2026-07-13_

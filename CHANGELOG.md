@@ -30,6 +30,45 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   host with a NAT64/6to4 gateway, would let an attacker box point the relay's probe
   at an internal service. Regression test
   `TestDirect_isPublicIP_IPv6TransitionSSRF`.
+- **Control-plane rate limiters keyed on the real client IP behind a trusted edge.**
+  With `-trust-proxy-headers` on, `RemoteAddr` is the fronting edge for every
+  connection, which would collapse the whole fleet into one shared control-connection
+  bucket (per-source throttle defeated; a fleet reconnecting after a redeploy
+  false-throttles itself). The control-plane limiters (control connects, S2S-notify,
+  SFU-host) now key on the left-most `X-Forwarded-For` entry — the same trusted-edge
+  header the request path already trusts — in that mode, and strictly on the observed
+  `RemoteAddr` (ignoring client-supplied XFF) when directly internet-facing. Tests in
+  `clientip_test.go`.
+- **Explicit TLS floor + ALPN on the self-terminating listener.** When the relay
+  terminates TLS itself and the operator supplied no `TLSConfig`, it now pins an
+  explicit hardened `tls.Config` — **TLS 1.2 minimum** + ALPN (`h2`, `http/1.1`) —
+  instead of inheriting Go-version-dependent stdlib defaults. An operator-provided
+  `TLSConfig` (e.g. a stricter TLS 1.3 floor) is preserved verbatim. Tests in
+  `tlsconfig_test.go`.
+
+### Changed — idle cost (direct-first cost model)
+
+- **Adaptive, idle-aware keepalive.** yamux's built-in fixed-interval keepalive is
+  replaced by an injectable driver (`tunnel/internal/keepalive`): it pings at the base
+  interval (relay 10s / agent 20s) while a tunnel is active and lengthens to a 60s idle
+  interval after 2min of no streams, restoring on activity. Under the ratified
+  direct-first / relay-as-metered-fallback model this cuts the standing per-box
+  heartbeat cost **without evicting the session** — reachability is unaffected, and
+  dead-peer detection stays bounded (worst case idle interval + write timeout). Tests
+  in `tunnel/internal/keepalive/keepalive_test.go`. (True idle-session *eviction*
+  remains planned, not implemented.)
+
+### Docs — trust/cost-model alignment (docs/relay-trust-cost-2026-07)
+
+- Aligned the DOCS + README with shipped reality and the ratified trust/cost posture:
+  direct-first is the **preferred** path (cheaper — unmetered — and more private — E2E
+  to the box); the relay is the metered fallback for NAT'd boxes; a **hosted** relay
+  sees relayed plaintext (cookies/tokens) for a NAT'd box with no direct path, so
+  privacy-sensitive workloads and self-hosters are steered to a verified direct
+  endpoint or a self-run relay. Documented the adaptive keepalive, the TLS floor + ALPN,
+  and the real-client-IP rate-limit keying; and marked **SNI/TLS-passthrough**, **true
+  idle-session eviction**, and an **egress-metering billing-model change** as planned,
+  not implemented. Docs only.
 
 ### Docs — verify + docs pass (verify/docs-polish-2026-07)
 
