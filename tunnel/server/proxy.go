@@ -392,7 +392,36 @@ func isWebSocketUpgrade(r *http.Request) bool {
 	return false
 }
 
-func clientIP(r *http.Request) string {
+// clientIP resolves the per-source key used for the control-plane rate limiters
+// (ctrlLimiter: control connects, S2S-notify, SFU-host) and for audit logging.
+//
+// SECURITY (trusted-edge client-IP resolution — same class as the resolver used
+// elsewhere in the suite): the key MUST identify the real caller, not whatever
+// hop the relay happens to observe.
+//
+//   - TrustProxyHeaders=true: the relay runs behind ITS OWN trusted TLS-
+//     terminating edge (the fly.toml deployment), so RemoteAddr is the EDGE IP
+//     for EVERY connection — keying on it collapses the whole fleet into ONE
+//     shared bucket (per-source throttle defeated; a fleet reconnecting after a
+//     redeploy false-throttles itself). We therefore key on the LEFT-MOST
+//     X-Forwarded-For entry (the real client). This is the SAME header, from the
+//     SAME trusted edge, that sanitizeRequestHeaders (proxy.go) already trusts as
+//     the client IP for the box's app in this exact mode. Fall back to RemoteAddr
+//     when XFF is absent/empty.
+//
+//   - TrustProxyHeaders=false: the relay is directly internet-facing and the peer
+//     is UNTRUSTED — a client could forge XFF to spoof its rate-limit identity, so
+//     we key strictly on the observed RemoteAddr and ignore XFF entirely.
+func (s *Server) clientIP(r *http.Request) string {
+	if s.cfg.TrustProxyHeaders {
+		// Left-most XFF entry is the real client (the edge appends the peer; see
+		// sanitizeRequestHeaders). Only trusted because a trusted edge fronts us.
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			if first := strings.TrimSpace(strings.SplitN(xff, ",", 2)[0]); first != "" {
+				return first
+			}
+		}
+	}
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr

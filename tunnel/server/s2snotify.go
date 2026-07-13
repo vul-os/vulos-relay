@@ -143,7 +143,7 @@ func (s *Server) handleS2SNotify(w http.ResponseWriter, r *http.Request) {
 // name and returns the resolved account ("" = unbilled/self-host). Mirrors
 // authorizeSFUHost: same throttle, same fail-closed posture, same grant.
 func (s *Server) authorizeS2SSender(w http.ResponseWriter, r *http.Request, sender string) (string, bool) {
-	if !s.ctrlLimiter.allow(clientIP(r)) {
+	if !s.ctrlLimiter.allow(s.clientIP(r)) {
 		s.metrics.rateLimitReject(limitControl)
 		w.Header().Set("Retry-After", "1")
 		http.Error(w, "too many attempts", http.StatusTooManyRequests)

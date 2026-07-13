@@ -365,7 +365,7 @@ func (s *Server) handleSFUHostResolve(w http.ResponseWriter, r *http.Request) {
 // the resolved account ("" = unbilled/self-host, always allowed) on success.
 func (s *Server) authorizeSFUHost(w http.ResponseWriter, r *http.Request, name string) (string, bool) {
 	// Per-source throttle to match the control path's abuse posture.
-	if !s.ctrlLimiter.allow(clientIP(r)) {
+	if !s.ctrlLimiter.allow(s.clientIP(r)) {
 		s.metrics.rateLimitReject(limitControl)
 		w.Header().Set("Retry-After", "1")
 		http.Error(w, "too many attempts", http.StatusTooManyRequests)
