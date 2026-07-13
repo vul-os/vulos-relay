@@ -45,6 +45,17 @@ Consequences, stated without varnish:
 - The **direct fast path bypasses the relay entirely** — TLS runs client↔box with the
   box's certificate. If relay-blindness matters for your workload, a verified direct
   endpoint gives it to you whenever the box is directly reachable.
+- **This is the ratified posture, not an accident.** Under the trust/cost model the
+  suite ships with: the **direct path is preferred** (it is both *cheaper* — unmetered
+  by the relay — and *more private* — E2E to the box), and the relay is the metered
+  fallback for boxes with no direct reachability (NAT/CGNAT). A **hosted** relay
+  (operated by Vulos, the same trust boundary as a hosted cell) therefore sees relayed
+  plaintext — **including session cookies and bearer tokens** — for a NAT'd box with no
+  direct path. If that matters to you, the honest guidance is explicit: steer
+  privacy-sensitive workloads and self-hosters toward a **verified direct endpoint** or a
+  **self-run relay**, where the "operator who can see everything" is you. Making a NAT'd
+  box↔user leg opaque to a hosted relay would need **SNI / TLS passthrough**, which is
+  **planned, not implemented** — see [Planned hardening](#planned-hardening).
 - What the relay *records* is much narrower than what it can see: structured logs carry
   a bounded field set (`name`, `account`, `remote` IP, enum `reason`) and **never**
   tokens, secrets, request paths, query strings, headers, or bodies
@@ -178,13 +189,23 @@ disables that limiter:
 
 | Limiter | Key | Default | Protects against |
 |---|---|---|---|
-| Control connections | source IP | 5/s, burst 20 | auth-guessing and CP-round-trip churn, *before* a WS upgrade is spent |
+| Control connections (also S2S-notify, SFU-host) | client IP | 5/s, burst 20 | auth-guessing and CP-round-trip churn, *before* a WS upgrade is spent |
 | Public requests | tunnel name | 50/s, burst 100 | one tunnel being flooded (or flooding) |
 | Public requests | global | 500/s, burst 1000 | aggregate overload of the relay |
 
 Buckets are lazily created, idle-evicted (10 m), and capped at 100k keys, so a flood of
 distinct source IPs cannot grow memory; at the cap, *new* keys are refused rather than
 tracked.
+
+The **client IP** the control-plane limiters key on tracks the trust-proxy posture, so
+one edge IP can't collapse a whole fleet into a single shared bucket
+([proxy.go `clientIP`](../tunnel/server/proxy.go)): with `-trust-proxy-headers` **off**
+(directly internet-facing) it is strictly the observed `RemoteAddr` — a client cannot
+forge `X-Forwarded-For` to move its rate-limit identity; with it **on** (behind a trusted
+edge, where `RemoteAddr` is the *edge* for every connection) it is the left-most XFF
+entry — the real client — from the same trusted edge, falling back to `RemoteAddr` when
+XFF is absent. This is the *same* header, from the *same* edge, that the request-path
+header hygiene below already trusts as the client IP.
 
 On top of the limiters, hard bounds keep every resource finite: 256 agents, 128
 in-flight streams per agent, 64 KiB headers, 256 MiB request bodies (streamed, `413` on
@@ -276,12 +297,38 @@ even configured. The public listener keeps only the deliberately-lightweight
   directly — the server logs a warning when running without `-cert`/`-key` for exactly
   this reason.
 - **Self-terminating**: pass `-cert`/`-key`. Subdomain mode needs a wildcard cert for
-  `*.relay.example.com`.
+  `*.relay.example.com`. On this path the relay pins an **explicit TLS floor** rather
+  than inheriting Go-version-dependent stdlib defaults: **TLS 1.2 minimum** plus an
+  explicit **ALPN** advertisement (`h2`, `http/1.1`)
+  ([server.go `hardenedTLSConfig`](../tunnel/server/server.go)). It applies only when the
+  relay terminates TLS itself *and* the operator supplied no `TLSConfig` of their own —
+  an operator-provided `tls.Config` (e.g. a stricter TLS 1.3 floor) is preserved
+  verbatim, never overridden.
 - **Agent dial**: verifies the relay's cert against system roots; pin a private CA via
   the library's `TLSConfig` for fully self-contained deployments. `-insecure`
   (`InsecureSkipVerify`) must never leave a test bench.
 
 ---
+
+## Planned hardening
+
+Documented honestly as **planned, not implemented** — do not assume any of these are in
+effect today:
+
+- **SNI / TLS passthrough for NAT'd boxes.** Today a NAT'd box with no direct path is
+  reached over a relay that *terminates* TLS, so a hosted relay sees the leg in
+  plaintext (see [What the relay can see](#what-the-relay-can-see)). A passthrough mode —
+  the relay routing on SNI and forwarding the encrypted stream for the box itself to
+  terminate — would make the box↔user leg opaque even to a hosted relay, extending the
+  direct path's end-to-end property to NAT'd boxes. Not built. Until it lands, the
+  direct path and self-run relays are the only ways to keep a hosted operator out of the
+  plaintext.
+- **True idle-session eviction.** The adaptive keepalive *slows* an idle session's
+  heartbeat but never closes it; a mechanism to evict genuinely idle tunnels outright is
+  a separate, unbuilt change.
+- **Egress-metering billing-model change.** The current meter counts proxied bytes as
+  described in [METERING-BILLING.md](METERING-BILLING.md); a shift to an egress-based
+  billing model is a future direction, not a current behavior.
 
 ## Reporting a vulnerability
 
