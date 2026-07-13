@@ -82,6 +82,54 @@ func TestResolve_DirectAvailable(t *testing.T) {
 	}
 }
 
+// TestResolve_DirectIsPreferredFirst PINS the ratified trust/cost decision at the
+// end-to-end resolve level: when the relay advertises a VERIFIED direct endpoint,
+// the client must ATTEMPT DIRECT FIRST (E2E, bypasses the relay = cheaper + more
+// private) and use the relay only as fallback. This complements the struct-level
+// TestResolution_SelectionLogic by asserting the ordering survives a real Resolve.
+func TestResolve_DirectIsPreferredFirst(t *testing.T) {
+	relay := fakeRelay(t, true, "https://box1.example.net")
+	rv := &Resolver{}
+	res, err := rv.Resolve(context.Background(), relay.URL)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	// Direct must be the PREFERRED transport when a verified direct endpoint exists.
+	if res.Preferred() != TransportDirect {
+		t.Fatalf("direct-first: Preferred must be direct when a direct endpoint is present, got %q", res.Preferred())
+	}
+	// The ordered attempt list must be [direct, relay] — direct tried first, relay
+	// only as fallback. This is the core of the ratified direct-first decision.
+	order := res.OrderedBaseURLs()
+	if len(order) != 2 {
+		t.Fatalf("direct-first: expected 2 ordered URLs [direct, relay], got %v", order)
+	}
+	if order[0] != "https://box1.example.net" {
+		t.Fatalf("direct-first: the FIRST base URL must be the DIRECT endpoint, got %q", order[0])
+	}
+	if order[1] != res.RelayURL {
+		t.Fatalf("direct-first: the SECOND (fallback) base URL must be the relay, got %q", order[1])
+	}
+}
+
+// TestResolve_RelayOnlyWhenNoDirect PINS the fail-safe half of the decision: with
+// NO direct endpoint the client falls back to relay-only ordering — reachability is
+// never broken when a box has no public endpoint (NAT'd/CGNAT/opted-out).
+func TestResolve_RelayOnlyWhenNoDirect(t *testing.T) {
+	relay := fakeRelay(t, false, "")
+	rv := &Resolver{}
+	res, err := rv.Resolve(context.Background(), relay.URL)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if res.Preferred() != TransportRelay {
+		t.Fatalf("no-direct: Preferred must be relay, got %q", res.Preferred())
+	}
+	if order := res.OrderedBaseURLs(); len(order) != 1 || order[0] != res.RelayURL {
+		t.Fatalf("no-direct: ordered list must be [relay] only, got %v", order)
+	}
+}
+
 func TestResolve_RejectsCleartextDirect(t *testing.T) {
 	// A relay that (impossibly) returns a cleartext direct endpoint must be ignored
 	// by the client — no cleartext fast path. Falls back to relay.
