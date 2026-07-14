@@ -88,6 +88,27 @@ backend that implements the peering contract and it works on its own.
 
 ---
 
+## Deployment modes
+
+Relay is connectivity **infrastructure**, so its deployment shape is about *who
+runs the relay server*, not a per-app `DEPLOY_MODE`. It lines up with the wider
+Vulos [three-shape model](https://github.com/vul-os/vulos/blob/dev/docs/ARCHITECTURE.md#deployment-modes)
+(self-host / OS-managed / cloud) like this:
+
+| Shape | Who runs the relay server | Billing |
+|---|---|---|
+| **Self-hosted relay** (sovereign) | You run `vulos-relayd` on a host you control; agents authorize with static grants | Unlinked, **unbilled** — no Vulos account needed |
+| **Vulos-hosted relay** (managed) | Vulos, or any operator running `vulos-relayd` with the CP integration, runs the relay; you run only the agent | Metered against your Vulos account tier |
+
+The box-side **agent** (`vulos-relay-agent`) is the *same binary* in both — the
+only difference is whether its grant carries an `account_id` (opt-in linking).
+The **SDK** (`@vulos/relay-client`) has no deployment shape of its own: it is a
+client library that talks to whichever peering backend hosts it (a self-hosted
+box, an OS-managed box, or the cloud). Full walkthroughs — Path A (self-hosted)
+vs Path B (Vulos-hosted) — are in [GETTING-STARTED.md](docs/GETTING-STARTED.md).
+
+---
+
 ## Features
 
 - **P2P fabric sessions** — `FabricClient` opens one `RTCDataChannel`
