@@ -9,7 +9,11 @@
     "build": "vite build --config vite.config.lib.js && npm run build:types",
     "build:lib": "vite build --config vite.config.lib.js",
     "build:types": "tsc -p tsconfig.dts.json",
-    "test": "vitest run"
+    "build:harness": "vite build --config e2e/harness/vite.config.js",
+    "test": "vitest run",
+    "pretest:e2e": "npm run build && npm run build:harness",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui"
   },
   "main": "./dist-lib/index.cjs",
   "module": "./dist-lib/index.js",
@@ -124,9 +128,11 @@
     }
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@vitejs/plugin-react": "^6.0.1",
     "jsdom": "^29.1.1",
     "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "typescript": "^5.9.3",
     "vite": "^8.0.1",
     "vitest": "^4.1.7"

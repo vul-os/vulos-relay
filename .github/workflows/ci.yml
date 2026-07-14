@@ -34,6 +34,27 @@ jobs:
       - name: Test
         run: npm test
 
+      # The unit suite imports from client/src and runs in jsdom, so it cannot
+      # see a broken BUILD OUTPUT. This package is a library: Office, Meet and
+      # Talk import the BUILT dist-lib/ — a built entry that throws on load takes
+      # THEIR app blank while everything here stays green. Boot a real consumer
+      # harness (which imports @vulos/relay-client through the exports map) in
+      # chromium.
+      - name: Install chromium
+        run: npx playwright install --with-deps chromium
+
+      # `test:e2e` → pretest:e2e → build (lib + types) + build:harness
+      - name: Built-library boot guard (real browser)
+        run: npm run test:e2e
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relay-client-playwright-report
+          path: client/playwright-report/
+          retention-days: 7
+
   go:
     name: Relay Server — Build, Vet & Test
     runs-on: ubuntu-24.04
