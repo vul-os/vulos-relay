@@ -83,6 +83,13 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
+	// Surface this node's pool identity (id/region) alongside the agent count so a
+	// pool health checker / operator can tell WHICH node answered. Both are omitted
+	// when unset (single-node self-host), preserving the original one-line output.
+	if s.cfg.NodeID != "" || s.cfg.Region != "" {
+		fmt.Fprintf(w, "ok agents=%d node=%s region=%s\n", s.registry.count(), s.cfg.NodeID, s.cfg.Region)
+		return
+	}
 	fmt.Fprintf(w, "ok agents=%d\n", s.registry.count())
 }
 

@@ -28,6 +28,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/vul-os/vulos-relay/tunnel/autoscale"
 )
 
 // Config configures a relay Server.
@@ -141,6 +143,31 @@ type Config struct {
 	// the SFU endpoint is proven with the same directprobe verifier.
 	EnableSFUHostRegistry bool
 
+	// AUTOSCALE-ON-SATURATION + MULTI-NODE POOL.
+
+	// NodeID / Region make a relay SELF-AWARE as one node of a geo-distributed pool
+	// (Hetzner primary, Vultr edge). They are surfaced on /healthz and used when this
+	// node registers itself into an autoscale.Pool. Both optional — a single-node
+	// self-host leaves them empty and behaves exactly as before. Region is a coarse
+	// geo tag (e.g. "eu-central", "af-south") a router uses to steer a client to the
+	// nearest node; Provider is an informational host tag ("hetzner"/"vultr").
+	NodeID   string
+	Region   string
+	Provider string
+
+	// SoftCapacity is the per-node soft limit at which this node is considered
+	// "full" for SCALING purposes (distinct from the hard MaxAgents /
+	// MaxStreamsPerAgent / rate caps, which still bound abuse independently). When
+	// any dimension is set, the server samples its load against it and publishes a
+	// vulos_relay_saturation_ratio gauge on /metrics, so an orchestrator (or the
+	// in-process autoscale.Autoscaler) can grow/shrink the pool. All-zero => the
+	// saturation gauge stays 0 and no sampler runs (feature is opt-in).
+	SoftCapacity autoscale.Capacity
+	// SaturationSamplePeriod is how often the saturation gauge is recomputed
+	// (throughput rate is derived across one period). 0 => default 15s; a negative
+	// value disables the sampler even if SoftCapacity is set.
+	SaturationSamplePeriod time.Duration
+
 	// RevokeSweepPeriod is how often the server rechecks every LIVE session against
 	// the revocation sources (static revoked-list + CP revoked/404 via the
 	// entitlement poll) and drops any that are now definitively revoked. This
@@ -232,6 +259,12 @@ type Server struct {
 	revokePeriod time.Duration    // live-session recheck cadence (0 => sweep disabled)
 	revokeStop   chan struct{}
 	revokeWG     sync.WaitGroup
+
+	// AUTOSCALE-ON-SATURATION: background loop that samples this node's load against
+	// SoftCapacity and publishes the saturation gauge. satStop is nil when no
+	// sampler runs (no soft capacity, or disabled).
+	satStop chan struct{}
+	satWG   sync.WaitGroup
 
 	// DIRECT-IP: verifier for box-advertised direct endpoints (nil when
 	// DisableDirect). directVerify is called at register time to prove an
@@ -326,6 +359,9 @@ func New(cfg Config) (*Server, error) {
 	// WAVE41-RELAY-REVOCATION: start the live-session revocation sweep (unless
 	// disabled). It periodically rechecks every session and drops revoked ones.
 	s.startRevocationSweep()
+	// AUTOSCALE-ON-SATURATION: start the saturation sampler (no-op unless a soft
+	// capacity is configured and the period is non-negative).
+	s.startSaturationSampler()
 	// WAVE50-RELAY-OBSERVABILITY: background loops are up ⇒ mark ready for /readyz.
 	s.metrics.setReady(true)
 	return s, nil
@@ -339,6 +375,7 @@ func (s *Server) Close() {
 		_ = s.adminSrv.Close()
 	}
 	s.stopRevocationSweep()
+	s.stopSaturationSampler()
 	if s.meter != nil {
 		s.meter.stopAndFlush()
 	}

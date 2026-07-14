@@ -140,6 +140,14 @@ type metrics struct {
 	activeStreams gauge // in-flight proxied streams across all tunnels
 	yamuxSessions gauge // live yamux sessions (== active agents, tracked separately for clarity)
 
+	// AUTOSCALE-ON-SATURATION: this node's most-recently-sampled saturation ratio
+	// (0..1+) against its configured soft capacity, stored x1000 so it fits an
+	// int64 atomic and renders as a float gauge. Published by the server's
+	// saturation sampler so an external orchestrator scraping /metrics can drive
+	// pool scaling even without the in-process Autoscaler. 0 when no soft capacity
+	// is configured (saturation undefined).
+	saturationMilli atomic.Int64
+
 	// Counters — lifecycle totals.
 	agentConnects    counter // successful agent registrations
 	agentDisconnects counter // agent sessions ended
@@ -299,6 +307,45 @@ func (m *metrics) proxiedBytes(d byteDirection, n int64) {
 	}
 }
 
+// totalBytes returns the cumulative bytes proxied across every direction since
+// boot. AUTOSCALE-ON-SATURATION uses it as the monotonic byte counter from which a
+// bytes/sec throughput rate is derived (by differencing consecutive samples).
+func (m *metrics) totalBytes() int64 {
+	if m == nil {
+		return 0
+	}
+	var sum uint64
+	for _, c := range m.bytes {
+		sum += c.get()
+	}
+	// Clamp to the int64 range (cumulative bytes will not realistically overflow a
+	// signed 64-bit counter, but be defensive rather than emit a negative).
+	if sum > 1<<62 {
+		return 1 << 62
+	}
+	return int64(sum)
+}
+
+// setSaturation records this node's latest saturation ratio (0..1+) for the
+// vulos_relay_saturation_ratio gauge. Nil-safe.
+func (m *metrics) setSaturation(ratio float64) {
+	if m == nil {
+		return
+	}
+	if ratio < 0 {
+		ratio = 0
+	}
+	m.saturationMilli.Store(int64(ratio * 1000))
+}
+
+// saturation returns the last-sampled saturation ratio.
+func (m *metrics) saturation() float64 {
+	if m == nil {
+		return 0
+	}
+	return float64(m.saturationMilli.Load()) / 1000.0
+}
+
 func (m *metrics) setReady(v bool) {
 	if m == nil {
 		return
@@ -342,6 +389,7 @@ func (m *metrics) writeTo(w io.Writer) {
 	writeGauge(w, "active_agents", "Live agent sessions currently registered.", nonNeg(m.activeAgents.get()))
 	writeGauge(w, "active_streams", "In-flight proxied streams across all tunnels.", nonNeg(m.activeStreams.get()))
 	writeGauge(w, "yamux_sessions", "Live yamux sessions (one per registered agent).", nonNeg(m.yamuxSessions.get()))
+	writeFloatGauge(w, "saturation_ratio", "This node's load (0..1+) vs its soft capacity; an orchestrator scales the pool when this stays high.", m.saturation())
 
 	writeCounter(w, "agent_connects_total", "Successful agent registrations.", m.agentConnects.get())
 	writeCounter(w, "agent_disconnects_total", "Agent sessions ended.", m.agentDisconnects.get())
@@ -365,6 +413,12 @@ func writeGauge(w io.Writer, name, help string, v int64) {
 	fmt.Fprintf(w, "# HELP %s%s %s\n", metricPrefix, name, help)
 	fmt.Fprintf(w, "# TYPE %s%s gauge\n", metricPrefix, name)
 	fmt.Fprintf(w, "%s%s %d\n", metricPrefix, name, v)
+}
+
+func writeFloatGauge(w io.Writer, name, help string, v float64) {
+	fmt.Fprintf(w, "# HELP %s%s %s\n", metricPrefix, name, help)
+	fmt.Fprintf(w, "# TYPE %s%s gauge\n", metricPrefix, name)
+	fmt.Fprintf(w, "%s%s %g\n", metricPrefix, name, v)
 }
 
 func writeCounter(w io.Writer, name, help string, v uint64) {
