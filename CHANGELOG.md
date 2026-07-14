@@ -9,6 +9,31 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added — geo-distributed pool + autoscale-on-saturation (Go reverse-tunnel)
+
+- **New `tunnel/autoscale` package** — provider-agnostic, app-level capacity control
+  so the relay can run as a **pool of N nodes** (Hetzner primary, Vultr edge) on
+  flat-bandwidth hosts with no managed autoscaler. Three pieces: a **saturation
+  `Detector`** (load → `0..1` ratio with high/low watermarks, sustain window,
+  cooldown, min/max-node bounds — anti-thrash hysteresis), a **`Provisioner` seam**
+  (`Provision` / `Decommission`, the only place an orchestrator wires a real
+  Hetzner/Vultr/Terraform/Fly integration — the relay never hardcodes a provider),
+  and a **health-checked `Pool`** (background `/readyz` checker + nearest-healthy
+  selector with region-preference and least-loaded tiebreak; a node never
+  decommissions itself). An `Autoscaler` ties them together.
+- **Server integration** — `*server.Server` now implements `autoscale.LoadSource`,
+  gains optional `-node-id` / `-region` / `-provider` self-identity (surfaced on
+  `/healthz`), soft-capacity config (`-soft-max-agents` / `-soft-max-streams` /
+  `-soft-max-bytes-per-sec`), and a background sampler that publishes
+  **`vulos_relay_saturation_ratio`** on `/metrics` so an external orchestrator can
+  drive scaling even without the in-process autoscaler. Opt-in: with no soft capacity
+  the node is byte-for-byte unchanged.
+- **No single-node assumption verified** — a node fails clean (`502` offline / `404`)
+  for a name it does not hold, exactly as a pool member must. Real geo-DNS/anycast
+  steering and a live provider `Provisioner` remain deploy-side; this ships the seams,
+  logic, and tests. ~40 new Go tests (detector hysteresis, pool membership/health/
+  nearest, autoscaler end-to-end, server load/sampler, real-server→autoscaler).
+
 ### Security — ingress-choke-point hardening (harden/deep-verify-2026-07)
 
 - **Client IP spoofing prevented at the ingress boundary.** The relay is the trust

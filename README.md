@@ -378,6 +378,15 @@ internet-facing:
   `/healthz` / `/readyz` on a **separate loopback/token-gated admin listener** (never
   on the public tunnel), with bounded-cardinality labels and structured `slog`
   logging that never emits a token/secret.
+- **Geo-distributed pool + autoscale-on-saturation** — the relay is built to run as
+  **one node of N** across providers/regions (Hetzner primary, Vultr edge/HA) on
+  flat-bandwidth hosts. Each node measures its own load (agents / in-flight streams /
+  throughput), normalizes it to a **`vulos_relay_saturation_ratio`** signal against a
+  soft capacity, and — via a **provider-agnostic `Provisioner` seam** + a
+  health-checked node **pool** — an orchestrator grows/drains the pool as load moves.
+  A node is self-aware (`-node-id` / `-region` / `-provider`, surfaced on `/healthz`)
+  and fails clean for a name it does not hold, so there is **no single-node
+  assumption**. See [docs/TUNNEL.md](docs/TUNNEL.md#geo-distributed-pool--autoscale-on-saturation).
 
 ```bash
 # relay server. Serves the public tunnel on -addr; serves /metrics + /healthz +

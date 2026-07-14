@@ -289,6 +289,24 @@ UNBILLED (pure self-host).
 | `-pop-id` | `VULOS_RELAY_POP_ID` | derived from domain | This relay's PoP id (usage dedup per-PoP). |
 | `-cp-token-store` | `VULOS_RELAY_CP_TOKENS=1` | `false` | Resolve agent tokens as CP install credentials instead of a static grants file (requires `-cp-url` + `-cp-shared-secret`). |
 
+**Geo-distributed pool + autoscale (optional)** — make the node self-aware and
+publish a saturation signal for pool scaling. All optional; leaving the soft caps
+at `0` keeps single-node behavior (no sampler runs).
+
+| Flag | Env | Default | Purpose |
+|------|-----|---------|---------|
+| `-node-id` | `VULOS_RELAY_NODE_ID` | — | Stable pool id for this node (e.g. `hel1-a`); surfaced on `/healthz`. |
+| `-region` | `VULOS_RELAY_REGION` | — | Coarse geo tag (e.g. `eu-central`, `af-south`) a router uses to steer a client to the nearest node. |
+| `-provider` | `VULOS_RELAY_PROVIDER` | — | Informational host tag (e.g. `hetzner`, `vultr`). |
+| `-soft-max-agents` | `VULOS_RELAY_SOFT_MAX_AGENTS` | `0` (ignore) | Soft agent cap — one saturation dimension. |
+| `-soft-max-streams` | `VULOS_RELAY_SOFT_MAX_STREAMS` | `0` (ignore) | Soft in-flight-stream cap. |
+| `-soft-max-bytes-per-sec` | `VULOS_RELAY_SOFT_MAX_BPS` | `0` (ignore) | Soft throughput cap (bytes/sec). |
+| `-saturation-sample-period` | `VULOS_RELAY_SAT_PERIOD` | `0` (⇒ 15s) | How often to recompute the saturation gauge. `<0` disables the sampler. |
+
+These are **soft** (scaling) limits, distinct from the hard `-max-agents` / rate
+caps that bound abuse. When any soft cap is set, the node publishes
+`vulos_relay_saturation_ratio` on `/metrics`. See the pool/autoscale section below.
+
 **Grants JSON:** each grant is a token, the names it may serve, and an optional
 `account_id` (link the token to a Vulos account for gating + metering; omit it to
 serve the token unbilled).
@@ -313,16 +331,72 @@ default `127.0.0.1:9090`), never on the public tunnel port:
 
 - `GET /metrics` — Prometheus text-exposition metrics (`vulos_relay_*`): active
   agents/streams, agent connects/disconnects, requests by outcome, auth failures by
-  reason, `429`s by surface, tunnel cuts by reason, and proxied bytes by direction.
-  Every label is a fixed enum, so cardinality is bounded and no attacker-controlled
-  value (host/path/name/account/IP/token) ever becomes a series. Loopback-only unless
-  `-metrics-token` is set (required for a non-loopback bind).
-- `GET /healthz` — `ok agents=<n>` liveness ping for load balancers.
+  reason, `429`s by surface, tunnel cuts by reason, proxied bytes by direction, and
+  **`vulos_relay_saturation_ratio`** (this node's load vs its soft capacity — the
+  autoscale signal). Every label is a fixed enum, so cardinality is bounded and no
+  attacker-controlled value (host/path/name/account/IP/token) ever becomes a series.
+  Loopback-only unless `-metrics-token` is set (required for a non-loopback bind).
+- `GET /healthz` — `ok agents=<n>` liveness ping for load balancers (also echoes
+  `node=<id> region=<r>` when `-node-id`/`-region` are set, so a pool health checker
+  can tell which node answered).
 - `GET /readyz` — `ready` (200) once the background loops are up; `503` while draining.
 
 Structured `slog` logs (JSON by default) cover the security-relevant lifecycle
 events with a bounded field set (`name`, `account`, `remote`, `reason`) and never
 emit a token or secret.
+
+---
+
+## Geo-distributed pool & autoscale-on-saturation
+
+The relay is the suite's **core reachability product**, so it is built to run as a
+**geo-distributed pool of N nodes** — Hetzner as the primary region, Vultr for a JHB
+edge / HA — on **flat-bandwidth hosts**. Those hosts have **no managed autoscaler**,
+so capacity control is **app-level**. It has three provider-agnostic pieces, in the
+`tunnel/autoscale` package (a library the deploy-side orchestrator wires):
+
+1. **Saturation detection.** Each node samples its own load — live agents, in-flight
+   streams, and derived throughput (bytes/sec) — and normalizes it to a `0..1+`
+   **saturation ratio** against its soft capacity (the `-soft-max-*` flags). A
+   `Detector` applies **hysteresis**: it only signals **scale-up** when the ratio
+   stays above a high-watermark for a sustained window, and **scale-down** when it
+   stays below a low-watermark (with more than the floor of nodes), separated by a
+   cooldown — so a brief spike never thrashes the pool. The current ratio is published
+   as **`vulos_relay_saturation_ratio`** on `/metrics`.
+
+2. **The `Provisioner` seam.** A tiny two-method interface —
+   `Provision(ctx) (Node, error)` and `Decommission(ctx, id) error` — that an
+   **orchestrator implements** to actually boot / tear down a relay node on whatever
+   host it uses (a Hetzner Cloud API call, a Vultr instance, a Terraform run, a Fly
+   machine, …). **The relay never hardcodes a cloud provider**; it only calls these.
+   Wiring a real provider behind this interface is the deploy-side integration.
+
+3. **Health-checked pool membership.** A `Pool` tracks the live nodes with a
+   background **health checker** (polls each node's `/readyz`) and a
+   **nearest-healthy** selector (region-preference, least-loaded tiebreak), so a
+   router / geo-DNS layer can steer a client to the closest live node and a **drained
+   node stops receiving new traffic** before it is torn down. The node running the
+   autoscaler is never chosen as a decommission target.
+
+The in-process `autoscale.Autoscaler` ties them together (read a `LoadSource` each
+interval → `Detector` → `Provisioner` + `Pool`); `*server.Server` implements
+`autoscale.LoadSource` directly, so it can be handed straight to an autoscaler. An
+operator who prefers to scale from **outside** the process can instead just scrape
+`vulos_relay_saturation_ratio` and drive their own control loop — the metric is the
+same signal, and the `Provisioner` is left unset.
+
+**No single-node assumption.** A node is self-aware (`-node-id` / `-region`) and a
+public request for a tunnel name it does **not** hold fails **clean** — `502` for a
+well-formed name with no local session (e.g. a misroute for a name that lives on
+another node), `404` for a host outside the relay domain. Which node actually holds a
+given box's tunnel is **deploy-side affinity**: a box dials one home node, and per-name
+routing to that node is done by DNS / a directory, not by this process.
+
+**What's deploy-only.** Real **geo-DNS / anycast** client steering, and a **real
+`Provisioner`** that talks to Hetzner/Vultr, are deployment concerns — this repo ships
+the **seams + logic + tests**, not a live multi-node fabric. Per-GB-per-region metering
+rides the existing account-linking usage path (`POST /api/relay/usage`), tagged by the
+node's `-pop-id` (set it per node/region so usage dedups and attributes per PoP).
 
 ---
 
