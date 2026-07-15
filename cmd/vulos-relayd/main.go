@@ -142,8 +142,8 @@ func main() {
 		if pid == "" {
 			pid = "relay-" + sanitizePoP(*domain)
 		}
-		cp = &server.CPClient{BaseURL: *cpURL, SharedSecret: *cpSecret, PoPID: pid}
-		log.Printf("vulos-relayd: Vulos Cloud billing ENABLED cp=%s pop=%s", *cpURL, pid)
+		cp = &server.CPClient{BaseURL: *cpURL, SharedSecret: *cpSecret, PoPID: pid, Region: *region}
+		log.Printf("vulos-relayd: Vulos Cloud billing ENABLED cp=%s pop=%s region=%q", *cpURL, pid, *region)
 	} else if *cpTokenMode {
 		log.Fatal("vulos-relayd: -cp-token-store requires -cp-url and -cp-shared-secret")
 	} else {

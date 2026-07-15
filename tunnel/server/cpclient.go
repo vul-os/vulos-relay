@@ -41,6 +41,14 @@ type CPClient struct {
 	SharedSecret string
 	// PoPID identifies this relay instance in usage reports (dedup is per-PoP).
 	PoPID string
+	// Region is the coarse geo tag of THIS relay node (e.g. "eu-central",
+	// "af-south"). It is stamped on every usage report so the CP's billing meter can
+	// price relay GB PER-REGION (Hetzner EU ~€1/TB vs Fly Africa $0.12/GB — ~6× EU)
+	// directly from the report, without an out-of-band PoP→region table. Empty on a
+	// self-host / single-region relay (the CP then falls back to a flat/default rate
+	// or its own PoP map). One node serves one region, so a per-report (envelope-
+	// level) region is the correct granularity — it mirrors how PoPID is per-report.
+	Region string
 	// HTTP is the client used for CP calls; defaults to a bounded-timeout client.
 	HTTP *http.Client
 }
@@ -145,6 +153,7 @@ type usageItem struct {
 // usageEnvelope mirrors the CP's relayUsageEnvelope.
 type usageEnvelope struct {
 	PoPID    string      `json:"pop_id"`
+	Region   string      `json:"region,omitempty"` // this PoP's geo tag, for per-region GB pricing
 	ReportID string      `json:"report_id"`
 	Period   string      `json:"period,omitempty"`
 	Items    []usageItem `json:"items"`
@@ -158,7 +167,7 @@ func (c *CPClient) ReportUsage(ctx context.Context, reportID string, items []usa
 	if c.SharedSecret == "" {
 		return nil, fmt.Errorf("cpclient: no shared secret")
 	}
-	env := usageEnvelope{PoPID: c.PoPID, ReportID: reportID, Items: items}
+	env := usageEnvelope{PoPID: c.PoPID, Region: c.Region, ReportID: reportID, Items: items}
 	body, err := json.Marshal(env)
 	if err != nil {
 		return nil, err

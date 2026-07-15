@@ -315,3 +315,40 @@ func (c *countingReadCloser) Read(p []byte) (int, error) {
 }
 
 func (c *countingReadCloser) Close() error { return c.rc.Close() }
+
+// meterReader wraps a reader and reports bytes to the per-account usage meter AND
+// the direction-bucketed observability metric AS THEY ARE READ (per Read call),
+// so a long-lived stream is metered INCREMENTALLY while it flows rather than only
+// when the surrounding io.Copy finally returns.
+//
+// This closes a revenue hole on the two EGRESS paths (the HTTP response body and
+// the WebSocket duplex splice). Both carry exactly the traffic a relay
+// specializes in — SSE, large downloads, hours-long WebSockets. If bytes were only
+// added at io.Copy completion (the previous behaviour), a connection still open at
+// a periodic flush contributed NOTHING until it closed, and a connection killed by
+// a drain/redeploy (Fly sends SIGTERM then hard-kills; http.Server.Shutdown does
+// not even wait for hijacked WebSocket conns) or a crash lost ALL its bytes. Metering
+// per-Read means every flush — including the final shutdown drain — captures the
+// bytes moved so far, and nothing rides unmetered on a long connection.
+//
+// account may be "" (metering disabled / unbilled token) and the meter or metrics
+// may be nil; each update is independently guarded (addBytes / proxiedBytes are
+// nil/empty-safe), so a wrapped reader is always safe to construct.
+type meterReader struct {
+	r       io.Reader
+	meter   *meter
+	account string
+	metrics *metrics
+	dir     byteDirection
+}
+
+func (mr *meterReader) Read(p []byte) (int, error) {
+	n, err := mr.r.Read(p)
+	if n > 0 {
+		if mr.account != "" {
+			mr.meter.addBytes(mr.account, int64(n))
+		}
+		mr.metrics.proxiedBytes(mr.dir, int64(n))
+	}
+	return n, err
+}

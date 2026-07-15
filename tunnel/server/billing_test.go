@@ -69,6 +69,16 @@ type fakeCP struct {
 	byteTotals   map[string]int64       // account → accumulated bytes
 	sessTotals   map[string]int         // account → accumulated sessions
 	entErr       bool                   // when true, entitlement reads 503 (transient error)
+	lastRegion   string                 // region tag from the most recent usage envelope
+	lastPoP      string                 // pop_id from the most recent usage envelope
+}
+
+// lastEnvelopeMeta returns the region + pop_id the CP saw on the latest usage POST,
+// so a test can assert per-region attribution reached the billing meter.
+func (f *fakeCP) lastEnvelopeMeta() (region, pop string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastRegion, f.lastPoP
 }
 
 func newFakeCP(secret string) *fakeCP {
@@ -139,6 +149,8 @@ func (f *fakeCP) server(t *testing.T) *httptest.Server {
 		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		f.lastRegion = env.Region
+		f.lastPoP = env.PoPID
 		// Idempotency: a replayed report_id is a no-op.
 		if env.ReportID != "" && f.seenReports[env.ReportID] {
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "applied": false})

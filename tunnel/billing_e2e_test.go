@@ -5,6 +5,7 @@
 package tunnel_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -162,6 +163,78 @@ func TestBilling_E2E_MeteredFlush(t *testing.T) {
 	b, s := fake.totals("acct-e2e")
 	t.Fatalf("metering did not land: bytes=%d (want >=%d) sessions=%d (want >=%d)",
 		b, n*1000, s, n)
+}
+
+// TestBilling_E2E_StreamingMeteredWhileConnectionOpen proves, through the REAL
+// tunnel (agent → relay → CP), that a long-lived response stream is metered
+// INCREMENTALLY: the already-streamed bytes reach the CP via a periodic flush
+// WHILE the response is still open. This is the end-to-end guard for the revenue
+// hole where egress bytes were only counted at connection close, so a stream cut
+// by a drain/redeploy/crash before it finished lost all of its bytes.
+func TestBilling_E2E_StreamingMeteredWhileConnectionOpen(t *testing.T) {
+	const secret = "e2e-secret"
+	fake := &fakeCPForE2E{
+		secret: secret,
+		allow:  map[string]bool{"acct-stream": true},
+		bytes:  map[string]int64{},
+		sess:   map[string]int{},
+		seen:   map[string]bool{},
+	}
+	cpSrv := httptest.NewServer(fake.handler(t))
+	defer cpSrv.Close()
+
+	// The target streams one large chunk, flushes it, then HOLDS the response open
+	// until released — simulating an SSE/download still in flight.
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	closeRelease := func() { releaseOnce.Do(func() { close(release) }) }
+	defer closeRelease()
+	const chunk = 64 * 1024
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(bytes.Repeat([]byte("s"), chunk))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-release // keep the stream OPEN
+	}))
+	defer target.Close()
+
+	cp := &server.CPClient{BaseURL: cpSrv.URL, SharedSecret: secret, PoPID: "pop-stream", Region: "eu-central"}
+	relay := newBilledRelay(t, cp, []server.Grant{
+		{Token: testToken, Names: []string{testName}, AccountID: "acct-stream"},
+	})
+	a := startAgent(t, relay.URL, testToken, testName, localAddr(target.URL))
+	waitConnected(t, a)
+
+	// Issue the request and read exactly the first chunk, leaving the stream open.
+	req, err := http.NewRequest(http.MethodGet, relay.URL+"/t/"+testName+"/", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer resp.Body.Close()
+	if _, err := io.ReadFull(resp.Body, make([]byte, chunk)); err != nil {
+		t.Fatalf("read streamed chunk: %v", err)
+	}
+
+	// The connection is STILL OPEN. A flush cycle (150ms) must land the streamed
+	// bytes at the CP — proving in-flight metering rather than count-at-close.
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, _ := fake.totals("acct-stream"); b >= chunk {
+			closeRelease() // let the handler finish
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	b, _ := fake.totals("acct-stream")
+	closeRelease()
+	t.Fatalf("streamed bytes not metered while the connection was open: got %d want >= %d", b, chunk)
 }
 
 func TestBilling_E2E_ConnectDeniedWhenNotEntitled(t *testing.T) {

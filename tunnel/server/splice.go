@@ -23,21 +23,22 @@ func wrapBuffered(c net.Conn, br *bufio.Reader) net.Conn {
 	return &bufferedConn{Conn: c, r: io.MultiReader(br, c)}
 }
 
-// duplexCopyObserved (WAVE24-RELAY-BILLING) meters the total
-// bytes spliced in BOTH directions to the account when account != "", and
-// (WAVE50-RELAY-OBSERVABILITY) always records them in the duplex-direction
-// proxied-bytes metric. It never blocks the data path — both updates are cheap
-// in-memory adds per io.Copy chunk.
+// duplexCopyObserved (WAVE24-RELAY-BILLING) meters the bytes spliced in BOTH
+// directions to the account when account != "", and (WAVE50-RELAY-OBSERVABILITY)
+// always records them in the duplex-direction proxied-bytes metric.
+//
+// Metering is INCREMENTAL, per read chunk (see meterReader) — NOT deferred to the
+// end of each direction's io.Copy. A WebSocket can stay open for hours moving many
+// GB; counting only at close meant a periodic flush saw nothing until the socket
+// died and a drain/redeploy/crash before close lost ALL those bytes (a revenue
+// hole). Per-chunk accounting makes every flush — including the final shutdown
+// drain — capture the bytes moved so far. It never blocks the data path (each add
+// is a cheap in-memory counter bump). The two directions bump the SAME account
+// concurrently; addBytes is mutex-guarded, so this is race-clean.
 func duplexCopyObserved(a, b net.Conn, m *meter, account string, mx *metrics) {
 	done := make(chan struct{}, 2)
 	cp := func(dst, src net.Conn) {
-		n, _ := io.Copy(dst, src)
-		if n > 0 {
-			if account != "" {
-				m.addBytes(account, n)
-			}
-			mx.proxiedBytes(dirDuplex, n)
-		}
+		_, _ = io.Copy(dst, &meterReader{r: src, meter: m, account: account, metrics: mx, dir: dirDuplex})
 		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
 			_ = cw.CloseWrite()
 		} else {

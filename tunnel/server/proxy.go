@@ -220,14 +220,17 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	s.metrics.request(outcomeOK)
-	// Meter outbound (response) bytes for the account as they stream to the client.
-	// WAVE50: also count them in the direction-bucketed proxied-bytes metric,
+	// Meter outbound (response) bytes for the account AS THEY STREAM to the client —
+	// incrementally, per chunk (see meterReader), NOT only at io.Copy completion — so
+	// a long-lived SSE stream or a large download is captured by periodic flushes and
+	// by the shutdown drain instead of being lost if the process is killed mid-stream.
+	// WAVE50: bytes are always counted in the direction-bucketed proxied-bytes metric,
 	// regardless of whether per-account billing is enabled.
-	n, _ := io.Copy(w, resp.Body)
-	s.metrics.proxiedBytes(dirOutbound, n)
-	if s.meter.enabled() && sess.accountID != "" {
-		s.meter.addBytes(sess.accountID, n)
+	outAcct := ""
+	if s.meter.enabled() {
+		outAcct = sess.accountID
 	}
+	_, _ = io.Copy(w, &meterReader{r: resp.Body, meter: s.meter, account: outAcct, metrics: s.metrics, dir: dirOutbound})
 }
 
 // route resolves an inbound request to a tunnel name. Subdomain mode is primary;

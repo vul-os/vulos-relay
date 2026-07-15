@@ -36,7 +36,14 @@ Per account, the relay accumulates two counters
 - **Bytes** — request-body bytes as they stream *into* the tunnel, response-body bytes
   as they stream *out*, and for WebSocket sessions the spliced bytes in **both**
   directions. HTTP header bytes are not counted — the meters wrap body and splice
-  streams, not the raw socket.
+  streams, not the raw socket. All three paths meter **incrementally, per read chunk**
+  ([`meterReader`](../tunnel/server/metering.go)) — a byte is counted the moment it
+  crosses the relay, **not** when the request/stream finally closes. This matters for
+  the long-lived traffic a relay specializes in (SSE, large downloads, hours-long
+  WebSockets): a stream open across a flush is already partly billed, and one killed by
+  a drain/redeploy/crash before it closes has its transferred bytes captured by the
+  next (or final shutdown) flush rather than being lost. Counting is mutex-guarded and
+  race-clean under the two concurrent WebSocket splice directions.
 - **Sessions** — one per proxied public request (each yamux stream opened into the
   agent counts one).
 
@@ -58,8 +65,17 @@ background loop flushes **deltas** to the CP:
   graceful shutdown. This is one reason `vulos-relayd` drains on SIGTERM rather than
   dying: the last deltas survive deploys.
 - **Wire:** `POST {cp}/api/relay/usage` with an envelope
-  `{pop_id, report_id, items:[{account_id, bytes, sessions}]}`, HMAC-SHA256-signed
-  over the exact body in `X-Pop-Sig` (keyed by `CP_SHARED_SECRET`).
+  `{pop_id, region, report_id, items:[{account_id, bytes, sessions}]}`,
+  HMAC-SHA256-signed over the exact body in `X-Pop-Sig` (keyed by `CP_SHARED_SECRET`).
+- **Per-region attribution:** the envelope stamps this relay's `region` (from
+  `-region`, e.g. `eu-central`, `af-south`) so the CP's billing meter can price relay
+  GB **per-region** directly from the report — relay egress is not uniform-cost
+  (Hetzner EU ~€1/TB vs Fly Africa $0.12/GB, ~6× EU), so the same account's GB may
+  bill differently by which PoP carried it. One relay node serves one region, so the
+  tag is per-report (envelope-level), mirroring `pop_id`. It is `omitempty`: a
+  self-host / single-region relay sends no region and the CP applies its own
+  default/flat rate (or its own `pop_id`→region map). The `region` tag is advisory
+  metadata for pricing — the authoritative bytes are the per-account `items`.
 - **Idempotency:** each batch carries a stable `report_id`
   (`<pop>-<boot-nonce>-<seq>`). A failed flush is retried later **with the same id**,
   so a batch the CP applied but whose response was lost dedups to a no-op instead of
@@ -232,7 +248,9 @@ reports.
 The honest error bars, all bounded and all in your favor or neutral:
 
 - Up to one flush interval (45 s) of usage is always in flight; a hard-killed relay
-  (not SIGTERM-drained) loses at most that window.
+  (not SIGTERM-drained) loses at most that window. Because egress is metered per-chunk
+  (not at connection close), this bound holds even for a stream that has been open for
+  hours — only the bytes since the last flush are ever at risk, not the whole stream.
 - Under a prolonged CP outage (>~12 h at defaults) the oldest queued batches are shed
   — under-billing, never over-billing.
 - Over-quota detection lags consumption by up to one flush + one gate refresh, so an
@@ -254,6 +272,7 @@ full flag table):
 | `-cp-url` | `VULOS_CP_URL` | Vulos Cloud base URL for entitlement + usage |
 | `-cp-shared-secret` | `CP_SHARED_SECRET` | HMAC key for `X-Pop-Sig` + service auth for entitlement reads |
 | `-pop-id` | `VULOS_RELAY_POP_ID` | This relay's PoP id (report-id namespace; default derived from the domain) |
+| `-region` | `VULOS_RELAY_REGION` | This relay's geo tag, stamped on usage reports for per-region GB pricing (e.g. `eu-central`, `af-south`); also drives nearest-node routing |
 | `-cp-token-store` | `VULOS_RELAY_CP_TOKENS=1` | Agent tokens are CP install credentials (requires both of the above) |
 
 Both `-cp-url` and `-cp-shared-secret` are required to enable billing; with either
@@ -263,5 +282,6 @@ Mixed mode works too: a static grants file where only some grants carry `account
 bills exactly those and serves the rest unbilled.
 
 Library embedders reach the same knobs via `server.Config.CP` (a `*CPClient` with
-`BaseURL`, `SharedSecret`, `PoPID`), `Config.GateTTL` (entitlement cache, default
-30 s), and `Config.MeterFlushPeriod` (default 45 s).
+`BaseURL`, `SharedSecret`, `PoPID`, and `Region` for per-region pricing),
+`Config.GateTTL` (entitlement cache, default 30 s), and `Config.MeterFlushPeriod`
+(default 45 s). `vulos-relayd` wires `CPClient.Region` from `-region` automatically.
