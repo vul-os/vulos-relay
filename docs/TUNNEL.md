@@ -279,6 +279,22 @@ These are **soft** (scaling) limits, distinct from the hard `-max-agents` / rate
 caps that bound abuse. When any soft cap is set, the node publishes
 `vulos_relay_saturation_ratio` on `/metrics`. See the pool/autoscale section below.
 
+**Smart autoscaler — CP PoP registration + heartbeat (optional, CP-driven)** —
+register this PoP with Vulos Cloud and heartbeat its load so a CP-side autoscaler
+can place agents and drive graceful drains (see "Smart autoscaler — the CP↔relay
+contract" below). Requires the CP link (`-cp-url`/`-cp-shared-secret`); with no CP
+or no `-public-endpoint` the relay runs unregistered (self-host / CP-optional).
+
+| Flag | Env | Default | Purpose |
+|------|-----|---------|---------|
+| `-public-endpoint` | `VULOS_RELAY_PUBLIC_ENDPOINT` | — | This PoP's agent-facing base URL announced to the CP (e.g. `wss://hel1.relay.example.com`). Empty ⇒ not CP-registered (no heartbeat). |
+| `-heartbeat-period` | `VULOS_RELAY_HEARTBEAT` | `0` (⇒ 12s) | PoP load-heartbeat cadence to the CP. `<0` disables it. |
+| `-host-mem-limit-bytes` | `VULOS_RELAY_HOST_MEM_LIMIT` | `0` | Host/cgroup memory limit for the heartbeat `mem_pct` gauge (`0` ⇒ report 0). |
+
+The CP→relay **graceful-drain** control endpoints (`/control/drain`,
+`/control/undrain`, `/control/status`) live on the **admin surface** and are gated by
+`X-Relay-Auth: CP_SHARED_SECRET` — they are **disabled on a relay with no CP secret**.
+
 **Grants JSON:** each grant is a token, the names it may serve, and an optional
 `account_id` (link the token to a Vulos account for gating + metering; omit it to
 serve the token unbilled).
@@ -372,6 +388,84 @@ node's `-pop-id` (set it per node/region so usage dedups and attributes per PoP)
 
 ---
 
+## Smart autoscaler — the CP↔relay contract
+
+The pool above is the in-process/library view; the **managed** service adds a
+**CP-driven** control loop so a Vulos Cloud autoscaler can place agents on the
+nearest, least-loaded PoP and scale the pool up/down **gracefully** (relay tunnels
+are sticky and stateful — a scale-down must never drop a live tunnel). It is
+**CP-OPTIONAL**: a self-host relay with no CP configured runs none of this; a
+standalone agent with no directory dials `-server` statically. All of it reuses the
+existing CP link (`CP_SHARED_SECRET` + the same `X-Pop-Sig` HMAC as usage reports).
+
+**1. PoP registration + load heartbeat (relay → CP).** A relay started with
+`-cp-url`/`-cp-shared-secret` **and** `-public-endpoint` announces itself and then
+heartbeats its live load every `-heartbeat-period` (default 12s). The load sample is
+taken off the hot path from counters the data path already maintains.
+
+```
+POST {cp}/api/relay/pop/register        # once on startup (retried)
+  X-Pop-Sig: hex(HMAC-SHA256(CP_SHARED_SECRET, body))
+  { "pop_id", "region", "provider", "public_endpoint",
+    "capacity": { "max_agents", "max_streams", "max_bytes_per_sec" } }
+
+POST {cp}/api/relay/pop/heartbeat       # every -heartbeat-period (~12s)
+  X-Pop-Sig: hex(HMAC-SHA256(CP_SHARED_SECRET, body))
+  { "pop_id", "region", "active_tunnels", "bytes_per_sec",
+    "cpu_pct", "mem_pct", "saturation", "draining" }
+```
+
+The CP drops a PoP that stops heartbeating (its own TTL) and excludes a
+`draining:true` PoP from new assignments.
+
+**2. Routing hook (agent → CP).** An agent started with `-directory` asks the CP for
+its assigned PoP on connect **and** every reconnect, then dials it — so when a PoP
+drains and the CP stops handing it out, the agent's next resolve returns a different
+PoP. Falls back to `-server` on any directory error (never stranded).
+
+```
+GET {directory}/api/relay/assign?name=<name>[&region=<pref>]
+  Authorization: Bearer <token>
+  → { "endpoint": "wss://hel1.relay.example.com", "region": "eu-central", "pop_id": "hel1-a" }
+```
+
+**3. Graceful drain (CP → relay).** To scale a PoP down the CP calls the authed
+control endpoint on the relay's **admin surface** (gated by `X-Relay-Auth:
+CP_SHARED_SECRET`, not the metrics token; **disabled entirely on a CP-less relay**):
+
+```
+POST {admin}/control/drain     X-Relay-Auth: <CP_SHARED_SECRET>
+  → 200 { "ok", "draining": true, "signaled": <n>, "active_tunnels": <n>, "pop_id", "region" }
+POST {admin}/control/undrain   X-Relay-Auth: <CP_SHARED_SECRET>   # abort a drain
+GET  {admin}/control/status    X-Relay-Auth: <CP_SHARED_SECRET>
+  → 200 { "draining", "active_tunnels", "saturation", "pop_id", "region", "node_id" }
+```
+
+`drain` makes the PoP **(a)** refuse new tunnel registrations and flip `/readyz` to
+draining (so a fronting LB stops routing here), and **(b)** send a **proactive
+reconnect** control signal to **every** connected agent. The CP polls
+`active_tunnels` (control `/status` or the heartbeat) and terminates the machine
+once it reaches **0**.
+
+**4. Proactive reconnect signal (relay → agent) — zero-drop migration.** The relay
+delivers the reconnect over the existing yamux tunnel as an **agent-terminated**
+control stream (path `/_vulos-relay/agent-control`, header `X-Vulos-Relay-Command:
+reconnect`) — it is handled by the agent itself and **never proxied to the box's
+local app** (a control stream causes no local dial, so the SSRF guard is untouched).
+On receipt the agent migrates **make-before-break**: it re-resolves its PoP, brings
+up the **new** tunnel, and only **then** winds down the old one (GoAway + brief
+in-flight drain). Because the old tunnel stays up until the new one is live, a drain
+moves every tunnel with **no dropped connectivity**.
+
+**Efficiency.** The forwarding data path uses a `sync.Pool` of 64 KiB buffers via
+`io.CopyBuffer` (no per-request/per-splice scratch allocation — the relay is
+bandwidth-bound, so bytes are direct COGS), streams bodies with backpressure (never
+buffers a whole response), bounds concurrency by the per-agent stream cap, and keeps
+the load heartbeat **off the hot path** (it only reads aggregate counters). The new
+control signals are event-driven (a drain), not per-packet.
+
+---
+
 ## Running the agent CLI (`vulos-relay-agent`)
 
 ```
@@ -392,6 +486,21 @@ vulos-relay-agent -server wss://relay.example.com -token SECRET1 -name box1 \
 
 `-local` must be a loopback address. The agent binds nothing inbound. `-direct` (if
 set) must be a bare `https://` origin the box serves publicly.
+
+**Smart-autoscale routing (optional).** Point the agent at a directory so it dials
+its **CP-assigned** PoP (nearest + least-loaded) instead of a fixed `-server`, and
+migrates automatically when its PoP drains:
+
+```
+vulos-relay-agent -directory https://cloud.vulos.org -region eu-central \
+  -server wss://relay.example.com \   # fallback if the directory is unreachable
+  -token SECRET1 -name box1 -local 127.0.0.1:8080
+```
+
+| Flag | Env | Default | Purpose |
+|------|-----|---------|---------|
+| `-directory` | `VULOS_RELAY_DIRECTORY` | — | CP/directory base URL for assigned-PoP resolution. Empty ⇒ dial `-server` statically. |
+| `-region` | `VULOS_RELAY_REGION` | — | Preferred-region hint sent to the directory. |
 
 ---
 

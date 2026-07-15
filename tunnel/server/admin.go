@@ -48,10 +48,99 @@ func (s *Server) adminHandler(tok string) http.Handler {
 	mux.HandleFunc("/metrics", s.gateAdmin(tok, s.handleMetrics))
 	mux.HandleFunc("/healthz", s.gateAdmin(tok, s.handleHealthz))
 	mux.HandleFunc("/readyz", s.gateAdmin(tok, s.handleReadyz))
+	// SMART-AUTOSCALE: CP→relay graceful-drain control. Gated by the CP shared
+	// secret (X-Relay-Auth), NOT the metrics token, and unavailable on a relay with
+	// no CP secret (self-host has nothing to drain remotely — SIGTERM suffices).
+	mux.HandleFunc("/control/drain", s.gateControl(s.handleDrain))
+	mux.HandleFunc("/control/undrain", s.gateControl(s.handleUndrain))
+	mux.HandleFunc("/control/status", s.gateControl(s.handleControlStatus))
 	mux.HandleFunc("/", s.gateAdmin(tok, func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	}))
 	return mux
+}
+
+// cpSharedSecret returns the CP service credential this relay shares with Vulos
+// Cloud, or "" when the relay has no CP link (self-host).
+func (s *Server) cpSharedSecret() string {
+	if s.cfg.CP == nil {
+		return ""
+	}
+	return s.cfg.CP.SharedSecret
+}
+
+// gateControl authenticates a CP→relay control request with the CP shared secret
+// presented as "X-Relay-Auth: <secret>" (the same service credential CPClient uses
+// for entitlement reads), compared in constant time. A relay with no CP secret has
+// the control surface DISABLED (404) — graceful drain is a managed-relay feature.
+// This is independent of the loopback/metrics-token gate so the CP can drive a
+// drain over the network by presenting the shared secret it already holds.
+func (s *Server) gateControl(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		secret := s.cpSharedSecret()
+		if secret == "" {
+			http.NotFound(w, r) // control surface not available on a CP-less relay
+			return
+		}
+		if !constEq(strings.TrimSpace(r.Header.Get("X-Relay-Auth")), secret) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		next(w, r)
+	}
+}
+
+// handleDrain (POST /control/drain) puts the PoP into graceful-drain mode: it stops
+// accepting new tunnels and proactively signals every connected agent to reconnect
+// to another PoP. Returns the live status so the CP can poll active_tunnels to 0.
+func (s *Server) handleDrain(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	signaled := s.Drain()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":             true,
+		"draining":       true,
+		"signaled":       signaled,
+		"active_tunnels": s.DrainingTunnels(),
+		"pop_id":         s.popID(),
+		"region":         s.cfg.Region,
+	})
+}
+
+// handleUndrain (POST /control/undrain) clears drain mode (drain aborted by the CP).
+func (s *Server) handleUndrain(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.Undrain()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "draining": false})
+}
+
+// handleControlStatus (GET /control/status) reports live drain/load status so the
+// CP-side autoscaler knows when it is safe to terminate the machine (0 tunnels).
+func (s *Server) handleControlStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"draining":       s.IsDraining(),
+		"active_tunnels": s.registry.count(),
+		"saturation":     s.SaturationRatio(),
+		"pop_id":         s.popID(),
+		"region":         s.cfg.Region,
+		"node_id":        s.cfg.NodeID,
+	})
+}
+
+// popID returns this PoP's id as known to the CP (falls back to the node id / domain).
+func (s *Server) popID() string {
+	if s.cfg.CP != nil && s.cfg.CP.PoPID != "" {
+		return s.cfg.CP.PoPID
+	}
+	if s.cfg.NodeID != "" {
+		return s.cfg.NodeID
+	}
+	return s.cfg.Domain
 }
 
 // gateAdmin enforces loopback-or-token access. A request is allowed iff it comes

@@ -107,6 +107,14 @@ func main() {
 		softMaxBPS     = flag.Int64("soft-max-bytes-per-sec", envInt64("VULOS_RELAY_SOFT_MAX_BPS", 0), "soft throughput cap (bytes/sec) for saturation (0=ignore)")
 		satPeriod      = flag.Duration("saturation-sample-period", envDuration("VULOS_RELAY_SAT_PERIOD", 0), "how often to recompute the saturation gauge (0=default 15s, <0=disable)")
 
+		// SMART-AUTOSCALE: PoP registration + load heartbeat to the CP. public-endpoint
+		// is this PoP's agent-facing URL announced to the CP (so it can assign this PoP
+		// to agents). Requires the CP link (-cp-url/-cp-shared-secret); with no CP or no
+		// public endpoint the relay runs unregistered (self-host / CP-optional).
+		publicEndpoint = flag.String("public-endpoint", envOr("VULOS_RELAY_PUBLIC_ENDPOINT", ""), "this PoP's agent-facing base URL announced to the CP (e.g. wss://hel1.relay.example.com); empty=not CP-registered")
+		heartbeat      = flag.Duration("heartbeat-period", envDuration("VULOS_RELAY_HEARTBEAT", 0), "PoP load-heartbeat cadence to the CP (0=default 12s, <0=disable)")
+		hostMemLimit   = flag.Int64("host-mem-limit-bytes", envInt64("VULOS_RELAY_HOST_MEM_LIMIT", 0), "host/cgroup memory limit for the heartbeat mem_pct gauge (0=report 0)")
+
 		// WAVE24-RELAY-BILLING: link this relay to Vulos Cloud so account-bound
 		// tokens are gated + metered. All optional — omit to run UNBILLED (self-host).
 		cpURL       = flag.String("cp-url", envOr("VULOS_CP_URL", ""), "Vulos Cloud base URL for entitlement/usage (e.g. https://cloud.vulos.dev)")
@@ -192,6 +200,10 @@ func main() {
 		},
 		SaturationSamplePeriod: *satPeriod,
 
+		PublicEndpoint:    *publicEndpoint,
+		HeartbeatPeriod:   *heartbeat,
+		HostMemLimitBytes: *hostMemLimit,
+
 		ControlConnRate:  *ctrlRate,
 		ControlConnBurst: *ctrlBurst,
 		PublicReqRate:    *reqRate,
@@ -209,6 +221,9 @@ func main() {
 		*addr, *domain, *pathMode, *maxAgents)
 	if *nodeID != "" || *region != "" {
 		log.Printf("vulos-relayd: pool node id=%q region=%q provider=%q", *nodeID, *region, *provider)
+	}
+	if cp != nil && *publicEndpoint != "" {
+		log.Printf("vulos-relayd: CP PoP heartbeat ENABLED endpoint=%s (registers + heartbeats load; CP drain control on the admin surface)", *publicEndpoint)
 	}
 	if *softMaxAgents > 0 || *softMaxStreams > 0 || *softMaxBPS > 0 {
 		log.Printf("vulos-relayd: saturation sampler ON (soft caps agents=%d streams=%d bps=%d) — vulos_relay_saturation_ratio on /metrics",

@@ -100,7 +100,17 @@ Vulos [three-shape model](https://github.com/vul-os/vulos/blob/dev/docs/ARCHITEC
 | Shape | Who runs the relay server | Billing |
 |---|---|---|
 | **Self-hosted relay** (sovereign) | You run `vulos-relayd` on a host you control; agents authorize with static grants | Unlinked, **unbilled** — no Vulos account needed |
-| **Vulos-hosted relay** (managed) | Vulos, or any operator running `vulos-relayd` with the CP integration, runs the relay; you run only the agent | Metered against your Vulos account tier |
+| **Vulos Relay** (the paid service) | Vulos runs it as a **multi-region, smart-autoscaled pool** of PoPs across superadmin-selected regions; you run only the agent, which dials its **CP-assigned nearest/least-loaded PoP** | Metered per-GB (region-stamped) against your Vulos account tier |
+
+**Vulos Relay is the suite's paid reachability service** — a geo-distributed pool of
+relay PoPs (regions chosen by the superadmin registry) that a **CP-driven autoscaler**
+grows, shrinks, and **gracefully drains** as load moves, so a PoP scale-down migrates
+every live tunnel with **zero dropped connectivity**. The **exact same binary** is
+fully **self-hostable and CP-optional**: run `vulos-relayd` with no CP link and it is
+a sovereign single relay that meters nothing and needs no account. The CP↔relay
+autoscaler contract (PoP registration + load heartbeat, PoP assignment, graceful
+drain, proactive reconnect) is documented in
+[docs/TUNNEL.md](docs/TUNNEL.md#smart-autoscaler--the-cprelay-contract).
 
 The box-side **agent** (`vulos-relay-agent`) is the *same binary* in both — the
 only difference is whether its grant carries an `account_id` (opt-in linking).
@@ -387,6 +397,21 @@ internet-facing:
   A node is self-aware (`-node-id` / `-region` / `-provider`, surfaced on `/healthz`)
   and fails clean for a name it does not hold, so there is **no single-node
   assumption**. See [docs/TUNNEL.md](docs/TUNNEL.md#geo-distributed-pool--autoscale-on-saturation).
+- **Smart autoscaler — CP-driven, stateful-safe (optional)** — a managed PoP
+  **registers with Vulos Cloud and heartbeats its load** (`active_tunnels`,
+  `bytes_per_sec`, `cpu`/`mem`, `saturation`, `draining`), agents ask the CP for their
+  **assigned nearest/least-loaded PoP** on connect + reconnect, and a CP-authed
+  **graceful-drain** control endpoint makes a PoP stop taking new tunnels and send a
+  **proactive reconnect** to every agent. Because relay tunnels are sticky and
+  stateful, migration is **make-before-break** — the new tunnel comes up before the
+  old one is torn down, so a scale-down drops **zero** connectivity. All of it is
+  **CP-optional** (a self-host relay runs none of it). See the
+  [CP↔relay contract](docs/TUNNEL.md#smart-autoscaler--the-cprelay-contract).
+- **Bandwidth-efficient forwarding** — the byte path reuses **pooled buffers**
+  (`sync.Pool` + `io.CopyBuffer`, no per-request scratch allocation), streams bodies
+  with backpressure (never buffers a whole response), and keeps the load heartbeat
+  **off the hot path** (it only reads aggregate counters) — the relay is bandwidth-
+  bound, so bytes are direct COGS.
 
 ```bash
 # relay server. Serves the public tunnel on -addr; serves /metrics + /healthz +

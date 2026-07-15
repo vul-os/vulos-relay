@@ -21,15 +21,55 @@ import (
 
 const controlPath = wire.ControlPath
 
-// maintain runs the reconnect loop: dial -> register -> serve, then back off with
-// jitter and retry until ctx is cancelled.
+// connectOutcome tells the supervise loop how a session ended.
+type connectOutcome int
+
+const (
+	// outcomeEnded: the session dropped (error or clean close) — the loop should
+	// re-resolve + re-dial after a backoff.
+	outcomeEnded connectOutcome = iota
+	// outcomeHandedOff: a graceful reconnect launched a make-before-break SUCCESSOR
+	// goroutine that now owns the tunnel — this loop must exit WITHOUT re-dialing.
+	outcomeHandedOff
+)
+
+// handoffTimeout bounds how long a graceful reconnect keeps the OLD session alive
+// while waiting for the successor to connect. Within it the migration is zero-drop
+// (both sides briefly up); if the new PoP is slow to accept, the old session is
+// still wound down and the successor keeps retrying (a brief gap only in that
+// degraded case).
+const handoffTimeout = 20 * time.Second
+
+// maintain runs the tunnel supervisor: resolve the assigned PoP (routing hook),
+// dial -> register -> serve, then back off and retry until ctx is cancelled. A
+// graceful drain reconnect hands the tunnel to a successor goroutine and this loop
+// exits.
 func (a *Agent) maintain(ctx context.Context) {
+	a.superviseFrom(ctx, "", nil)
+}
+
+// superviseFrom is the supervise loop. firstEndpoint, when non-empty, is dialed on
+// the FIRST iteration (a graceful handoff passes the successor's already-resolved
+// PoP); otherwise the endpoint is resolved each iteration via the routing hook.
+// ready, when non-nil, is closed once the FIRST session of this loop reaches
+// connected — a predecessor waits on it to know the successor is live before winding
+// down (make-before-break).
+func (a *Agent) superviseFrom(ctx context.Context, firstEndpoint string, ready chan struct{}) {
 	backoff := 500 * time.Millisecond
+	endpoint := firstEndpoint
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		err := a.connectOnce(ctx)
+		if endpoint == "" {
+			endpoint = a.resolveEndpoint(ctx) // routing hook: nearest/least-loaded PoP
+		}
+		outcome, err := a.connectOnce(ctx, endpoint, ready)
+		ready = nil   // only the first successful connect signals the predecessor
+		endpoint = "" // re-resolve on the next iteration (drain → new PoP)
+		if outcome == outcomeHandedOff {
+			return // a successor goroutine owns the tunnel now
+		}
 		if ctx.Err() != nil {
 			return
 		}
@@ -56,15 +96,16 @@ func (a *Agent) maintain(ctx context.Context) {
 	}
 }
 
-// connectOnce establishes one control connection, registers, and serves yamux
-// streams until the session drops or ctx is cancelled.
-func (a *Agent) connectOnce(ctx context.Context) error {
+// connectOnce establishes one control connection to endpoint, registers, and serves
+// yamux streams until the session drops, ctx is cancelled, or a graceful-reconnect
+// signal triggers a make-before-break handoff.
+func (a *Agent) connectOnce(ctx context.Context, endpoint string, ready chan struct{}) (connectOutcome, error) {
 	dialCtx, cancel := context.WithTimeout(ctx, a.opts.HandshakeTimeout)
 	defer cancel()
 
-	conn, err := a.dial(dialCtx)
+	conn, err := a.dial(dialCtx, endpoint)
 	if err != nil {
-		return fmt.Errorf("dial: %w", err)
+		return outcomeEnded, fmt.Errorf("dial: %w", err)
 	}
 	// Ensure the raw conn is closed when we leave (yamux also owns it, but this is
 	// belt-and-suspenders for the error paths before yamux takes over).
@@ -72,7 +113,7 @@ func (a *Agent) connectOnce(ctx context.Context) error {
 
 	ack, err := a.register(conn)
 	if err != nil {
-		return fmt.Errorf("register: %w", err)
+		return outcomeEnded, fmt.Errorf("register: %w", err)
 	}
 
 	a.setStatus(StatusConnected, ack.PublicURL, "")
@@ -86,11 +127,17 @@ func (a *Agent) connectOnce(ctx context.Context) error {
 			a.appendLog("direct endpoint not used (relay only): %s", ack.DirectError)
 		}
 	}
+	// Signal a waiting predecessor that this (successor) session is live, so it can
+	// wind down its old session — the make-before-break overlap that makes a drain
+	// zero-drop.
+	if ready != nil {
+		close(ready)
+	}
 
 	// The agent is the yamux SERVER (accepts streams the relay opens).
 	session, err := yamux.Server(conn, yamuxConfig())
 	if err != nil {
-		return fmt.Errorf("yamux: %w", err)
+		return outcomeEnded, fmt.Errorf("yamux: %w", err)
 	}
 	defer session.Close()
 
@@ -117,28 +164,92 @@ func (a *Agent) connectOnce(ctx context.Context) error {
 		}
 	}()
 
-	for {
-		stream, err := session.Accept()
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
+	// Accept streams in a goroutine so the main select can ALSO watch for a graceful
+	// reconnect request without blocking on Accept.
+	sessErr := make(chan error, 1)
+	go func() {
+		for {
+			stream, err := session.Accept()
+			if err != nil {
+				sessErr <- err
+				return
 			}
-			// io.EOF / session shutdown -> retryable clean end.
-			if errors.Is(err, io.EOF) || errors.Is(err, yamux.ErrSessionShutdown) {
-				return nil
-			}
-			return fmt.Errorf("accept: %w", err)
+			go a.serveStream(stream)
 		}
-		go a.serveStream(stream)
+	}()
+
+	select {
+	case <-ctx.Done():
+		return outcomeEnded, nil
+	case err := <-sessErr:
+		if ctx.Err() != nil {
+			return outcomeEnded, nil
+		}
+		if errors.Is(err, io.EOF) || errors.Is(err, yamux.ErrSessionShutdown) {
+			return outcomeEnded, nil // retryable clean end
+		}
+		return outcomeEnded, fmt.Errorf("accept: %w", err)
+	case reason := <-a.reconnectReq:
+		return a.gracefulHandoff(ctx, session, reason), nil
 	}
 }
 
-// dial opens the control websocket (or the test hook) and returns a net.Conn.
-func (a *Agent) dial(ctx context.Context) (net.Conn, error) {
-	if a.dialHook != nil {
-		return a.dialHook(ctx)
+// gracefulHandoff performs a PROACTIVE, make-before-break migration to the agent's
+// re-resolved PoP: it launches a SUCCESSOR supervise goroutine (which resolves a
+// fresh PoP — a draining source PoP is no longer handed out — and dials it), waits
+// (bounded) for the successor to connect, THEN winds down the OLD session. Because
+// the old tunnel stays up until the new one is live, a drain migrates with no
+// dropped connectivity. Returns outcomeHandedOff so the caller's loop exits (the
+// successor now owns the tunnel).
+func (a *Agent) gracefulHandoff(ctx context.Context, old *yamux.Session, reason string) connectOutcome {
+	a.appendLog("graceful reconnect (reason=%q): migrating to a fresh PoP", reason)
+	ready := make(chan struct{})
+	a.handoffWG.Add(1)
+	go func() {
+		defer a.handoffWG.Done()
+		// Successor resolves its OWN endpoint (re-query the directory → new PoP).
+		a.superviseFrom(ctx, "", ready)
+	}()
+
+	// Wait for the successor to connect (zero-drop overlap), bounded so a slow new
+	// PoP cannot pin the old session forever.
+	select {
+	case <-ready:
+		a.appendLog("successor PoP connected; winding down old tunnel")
+	case <-ctx.Done():
+		return outcomeHandedOff
+	case <-time.After(handoffTimeout):
+		a.appendLog("successor did not connect within handoff window; winding down old tunnel anyway")
 	}
-	target, err := controlURL(a.opts.ServerURL)
+
+	// GoAway tells the relay to stop opening NEW streams on the old session; in-flight
+	// streams are given a brief grace period to finish before the session closes.
+	_ = old.GoAway()
+	a.drainOldSession(old)
+	_ = old.Close()
+	return outcomeHandedOff
+}
+
+// drainOldSession waits briefly for in-flight streams on a superseded session to
+// finish before it is closed, so a graceful reconnect does not sever requests that
+// were already mid-flight. Bounded so a stuck stream cannot delay the handoff.
+func (a *Agent) drainOldSession(sess *yamux.Session) {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if sess.NumStreams() == 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// dial opens the control websocket to endpoint (or the test hook) and returns a
+// net.Conn.
+func (a *Agent) dial(ctx context.Context, endpoint string) (net.Conn, error) {
+	if a.dialHook != nil {
+		return a.dialHook(ctx, endpoint)
+	}
+	target, err := controlURL(endpoint)
 	if err != nil {
 		return nil, err
 	}

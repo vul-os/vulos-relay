@@ -65,6 +65,7 @@ type logFields struct {
 	Account string // resolved account id ("" = unbilled)
 	Remote  string // source IP
 	Reason  string // bounded enum reason (auth-fail / cut reason)
+	Region  string // coarse geo tag (multi-region PoP identity)
 }
 
 func (f logFields) attrs() []any {
@@ -80,6 +81,9 @@ func (f logFields) attrs() []any {
 	}
 	if f.Reason != "" {
 		a = append(a, "reason", f.Reason)
+	}
+	if f.Region != "" {
+		a = append(a, "region", f.Region)
 	}
 	return a
 }

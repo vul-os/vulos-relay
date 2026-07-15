@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/vul-os/vulos-relay/tunnel/autoscale"
@@ -145,6 +146,27 @@ type Config struct {
 	Region   string
 	Provider string
 
+	// SMART-AUTOSCALE (PoP registration + load heartbeat). All optional and
+	// CP-OPTIONAL: unless a CP is configured AND PublicEndpoint is set, the relay
+	// does none of this (self-host runs unchanged).
+
+	// PublicEndpoint is this PoP's agent-facing base URL (e.g.
+	// "wss://hel1.relay.vulos.org") announced to the CP so it can hand this PoP to
+	// an agent as its assigned nearest/least-loaded node. Empty => the PoP is not
+	// registered with the CP (no heartbeat loop runs).
+	PublicEndpoint string
+	// HeartbeatPeriod is the PoP load-heartbeat cadence. 0 => default 12s; a
+	// negative value DISABLES the heartbeat even when a CP + PublicEndpoint are set.
+	HeartbeatPeriod time.Duration
+	// SysSampler overrides the host CPU%/mem% source in the load heartbeat (an
+	// operator wires cgroup/proc stats). nil => a runtime-derived best-effort
+	// sampler (see defaultSysSampler); the autoscaler's exact signals are
+	// active_tunnels / bytes_per_sec / saturation regardless.
+	SysSampler SysSampler
+	// HostMemLimitBytes, when >0, lets the default sampler report mem_pct as a
+	// fraction of the host/cgroup memory limit. 0 => mem_pct is reported as 0.
+	HostMemLimitBytes int64
+
 	// SoftCapacity is the per-node soft limit at which this node is considered
 	// "full" for SCALING purposes (distinct from the hard MaxAgents /
 	// MaxStreamsPerAgent / rate caps, which still bound abuse independently). When
@@ -256,6 +278,13 @@ type Server struct {
 	satStop chan struct{}
 	satWG   sync.WaitGroup
 
+	// SMART-AUTOSCALE: draining is set by Drain() (CP-driven graceful scale-down) —
+	// while set, new tunnels are refused and every agent has been signaled to
+	// reconnect elsewhere. popLink holds the CP registration + load-heartbeat loop;
+	// nil when the relay is not a CP-registered PoP (self-host / CP-optional).
+	draining atomic.Bool
+	popLink  *popLinkState
+
 	// DIRECT-IP: verifier for box-advertised direct endpoints (nil when
 	// DisableDirect). directVerify is called at register time to prove an
 	// advertised endpoint is reachable + owned before it is surfaced to clients.
@@ -345,6 +374,10 @@ func New(cfg Config) (*Server, error) {
 	// AUTOSCALE-ON-SATURATION: start the saturation sampler (no-op unless a soft
 	// capacity is configured and the period is non-negative).
 	s.startSaturationSampler()
+	// SMART-AUTOSCALE: start the CP PoP registration + load-heartbeat loop (no-op
+	// unless a CP is configured AND a public endpoint is advertised — the
+	// CP-optional / self-host contract).
+	s.startPoPHeartbeat()
 	// WAVE50-RELAY-OBSERVABILITY: background loops are up ⇒ mark ready for /readyz.
 	s.metrics.setReady(true)
 	return s, nil
@@ -359,6 +392,7 @@ func (s *Server) Close() {
 	}
 	s.stopRevocationSweep()
 	s.stopSaturationSampler()
+	s.stopPoPHeartbeat()
 	if s.meter != nil {
 		s.meter.stopAndFlush()
 	}

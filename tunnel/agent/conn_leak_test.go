@@ -61,9 +61,9 @@ func TestConnectOnce_NoGoroutineLeakPerSession(t *testing.T) {
 
 	runOne := func() {
 		clientConn, serverConn := net.Pipe()
-		a.dialHook = func(context.Context) (net.Conn, error) { return clientConn, nil }
+		a.dialHook = func(context.Context, string) (net.Conn, error) { return clientConn, nil }
 		go fakeRelayPeer(serverConn)
-		if err := a.connectOnce(ctx); err != nil {
+		if _, err := a.connectOnce(ctx, a.opts.ServerURL, nil); err != nil {
 			t.Fatalf("connectOnce: %v", err)
 		}
 	}

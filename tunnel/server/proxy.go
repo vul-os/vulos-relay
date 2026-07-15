@@ -3,7 +3,6 @@ package server
 import (
 	"bufio"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -213,7 +212,9 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 	if s.meter.enabled() {
 		outAcct = sess.accountID
 	}
-	_, _ = io.Copy(w, &meterReader{r: resp.Body, meter: s.meter, account: outAcct, metrics: s.metrics, dir: dirOutbound})
+	// pooledCopy (not io.Copy) so the per-response scratch buffer is reused from a
+	// pool instead of allocated per request — the relay's egress path is hot.
+	_, _ = pooledCopy(w, &meterReader{r: resp.Body, meter: s.meter, account: outAcct, metrics: s.metrics, dir: dirOutbound})
 }
 
 // route resolves an inbound request to a tunnel name. Subdomain mode is primary;

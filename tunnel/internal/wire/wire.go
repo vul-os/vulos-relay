@@ -91,3 +91,43 @@ const DirectProbePath = "/_vulos-direct/probe"
 // DirectProbeHeader carries the one-time probe nonce from the relay to the box on
 // the reachability/ownership probe, and is echoed by the box in its response.
 const DirectProbeHeader = "X-Vulos-Direct-Probe"
+
+// ──────────────────────────────────────────────────────────────────────────
+// AGENT-CONTROL channel (SMART-AUTOSCALE): relay → agent control signals.
+//
+// The relay is the yamux CLIENT — it opens one stream per inbound public request,
+// which the agent proxies to its local target. It ALSO uses the same stream
+// mechanism to deliver AGENT-TERMINATED control commands (never proxied to the
+// box's local app): the relay opens a stream and writes a plain HTTP request whose
+// path is AgentControlPath and which carries AgentCommandHeader. The agent
+// recognizes such a stream BEFORE any local dial, handles the command itself, and
+// replies 200 — nothing reaches the loopback target (so the SSRF guard is
+// untouched: a control stream never causes a local connection).
+//
+// The only command today is CommandReconnect: a PROACTIVE "re-dial your assigned
+// PoP now" signal used for GRACEFUL DRAIN. When a PoP is being decommissioned the
+// CP tells it to drain; the relay broadcasts CommandReconnect to every connected
+// agent, each agent re-resolves its nearest/least-loaded PoP and migrates there —
+// make-before-break, so a drain moves every tunnel with no dropped connectivity.
+//
+// TRUST: the command arrives over the agent's OWN authenticated control connection
+// to a relay it dialed and trusts. The relay can already open arbitrary proxied
+// streams to the box's local app; a control stream grants it no NEW capability, so
+// this adds no attack surface.
+const (
+	// AgentControlPath is the reserved request path the relay uses for an
+	// agent-terminated control command. It is never forwarded to the local target.
+	AgentControlPath = "/_vulos-relay/agent-control"
+
+	// AgentCommandHeader carries the control command name. Its presence is what
+	// marks a stream as a control stream (checked before any local dial).
+	AgentCommandHeader = "X-Vulos-Relay-Command"
+
+	// AgentReasonHeader is an optional, informational reason for the command
+	// (e.g. "drain") the agent may log. Never trusted for control flow.
+	AgentReasonHeader = "X-Vulos-Relay-Reason"
+
+	// CommandReconnect asks the agent to gracefully re-dial its assigned PoP now
+	// (make-before-break). Used by GRACEFUL DRAIN.
+	CommandReconnect = "reconnect"
+)

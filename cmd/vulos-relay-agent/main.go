@@ -30,6 +30,13 @@ func main() {
 		local     = flag.String("local", "127.0.0.1:8080", "local target host:port (must be loopback)")
 		insecure  = flag.Bool("insecure", false, "skip TLS verification (testing only)")
 		direct    = flag.String("direct", os.Getenv("VULOS_RELAY_DIRECT_ENDPOINT"), "optional public https:// base URL this box is ALSO directly reachable at (DIRECT-IP fast path); relay verifies reachability+ownership before advertising it")
+
+		// SMART-AUTOSCALE routing hook: when -directory is set, the agent asks the CP
+		// for its assigned PoP (nearest + least-loaded) on connect AND reconnect, and
+		// migrates to a fresh PoP when its current one drains. Empty => dial -server
+		// statically (self-host / single relay).
+		directory = flag.String("directory", os.Getenv("VULOS_RELAY_DIRECTORY"), "CP/directory base URL for assigned-PoP resolution (empty=use -server statically)")
+		region    = flag.String("region", os.Getenv("VULOS_RELAY_REGION"), "preferred region hint sent to the directory")
 	)
 	flag.Parse()
 
@@ -40,6 +47,8 @@ func main() {
 		LocalAddr:          *local,
 		InsecureSkipVerify: *insecure,
 		DirectEndpoint:     *direct,
+		DirectoryURL:       *directory,
+		Region:             *region,
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

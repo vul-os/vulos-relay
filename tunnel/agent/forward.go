@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/vul-os/vulos-relay/tunnel/internal/wire"
 )
 
 // localDialTimeout bounds connecting to the local target.
@@ -29,6 +31,16 @@ func (a *Agent) serveStream(stream net.Conn) {
 	// Prevent unbounded header memory: ReadRequest already read headers, but guard
 	// against absurd content by capping the body read downstream via the local dial.
 	req.RequestURI = ""
+
+	// SMART-AUTOSCALE: an AGENT-TERMINATED control command (e.g. a graceful-drain
+	// reconnect signal) is handled HERE and never proxied to the local target — so a
+	// control stream causes no local dial (the SSRF guard is untouched). The command
+	// arrives over this agent's OWN authenticated relay connection, which the agent
+	// already trusts to open proxied streams, so it grants no new capability.
+	if cmd := req.Header.Get(wire.AgentCommandHeader); cmd != "" {
+		a.handleControlCommand(stream, cmd, req.Header.Get(wire.AgentReasonHeader))
+		return
+	}
 
 	// SSRF guard, re-checked here: we ONLY ever dial our one configured, loopback-
 	// validated target. The request's Host/URL delivered over the relay never
@@ -120,7 +132,8 @@ func (a *Agent) pumpWebSocket(clientSide net.Conn, clientBr *bufio.Reader, upstr
 func duplexCopy(a, b net.Conn) {
 	done := make(chan struct{}, 2)
 	cp := func(dst, src net.Conn) {
-		_, _ = io.Copy(dst, src)
+		// Pooled scratch buffer (no per-splice allocation on the box's hot path).
+		_, _ = pooledCopy(dst, src)
 		// Signal EOF to the other side.
 		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
 			_ = cw.CloseWrite()
@@ -133,6 +146,22 @@ func duplexCopy(a, b net.Conn) {
 	go cp(b, a)
 	<-done
 	<-done
+}
+
+// handleControlCommand services a relay→agent control command delivered over a
+// yamux stream. It replies on the SAME stream and never touches the local target.
+// The only command is CommandReconnect: it acks 200 and asks the maintain loop to
+// gracefully migrate to the agent's (re-resolved) assigned PoP — make-before-break,
+// so a drain moves the tunnel with no dropped connectivity.
+func (a *Agent) handleControlCommand(stream net.Conn, cmd, reason string) {
+	switch cmd {
+	case wire.CommandReconnect:
+		a.appendLog("relay requested graceful reconnect (reason=%q)", reason)
+		writeSimpleResponse(stream, http.StatusOK, "reconnecting")
+		a.requestReconnect(reason)
+	default:
+		writeSimpleResponse(stream, http.StatusBadRequest, "unknown command")
+	}
 }
 
 func isWebSocketUpgrade(req *http.Request) bool {

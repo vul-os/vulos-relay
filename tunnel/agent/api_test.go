@@ -190,7 +190,7 @@ func TestStart_DialHookErrorSurfacesAsErrorStatus(t *testing.T) {
 		MaxBackoff:       10 * time.Millisecond,
 		HandshakeTimeout: 50 * time.Millisecond,
 	})
-	a.dialHook = func(ctx context.Context) (net.Conn, error) {
+	a.dialHook = func(ctx context.Context, _ string) (net.Conn, error) {
 		return nil, context.DeadlineExceeded
 	}
 	if err := a.Start(context.Background()); err != nil {

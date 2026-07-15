@@ -55,6 +55,18 @@ type Options struct {
 	// honors it if the token authorizes it.
 	Name string
 
+	// SMART-AUTOSCALE routing hook. DirectoryURL, when set, is the CP/directory base
+	// URL the agent queries for its assigned PoP (nearest + least-loaded) before each
+	// connect AND reconnect — so a graceful drain migrates the tunnel to a fresh PoP.
+	// Empty => the agent dials ServerURL statically (self-host / single relay). Region
+	// is an optional preferred-region hint passed to the directory.
+	DirectoryURL string
+	Region       string
+	// Resolver overrides the PoP resolver (tests inject a fake). nil => a default
+	// HTTP resolver is built from DirectoryURL (and is itself nil when DirectoryURL
+	// is empty, i.e. static ServerURL dialing).
+	Resolver PoPResolver
+
 	// DirectEndpoint (DIRECT-IP) is an OPTIONAL public https:// base URL at which
 	// this box is ALSO directly reachable (static IP / public hostname). When set,
 	// the agent advertises it to the relay, which independently verifies it
@@ -94,6 +106,11 @@ type Snapshot struct {
 	DirectEndpoint string `json:"directEndpoint,omitempty"`
 	DirectVerified bool   `json:"directVerified,omitempty"`
 	DirectError    string `json:"directError,omitempty"`
+
+	// SMART-AUTOSCALE: the PoP the directory assigned for the current session (empty
+	// when dialing a static ServerURL). A UI can surface which region/PoP is serving.
+	AssignedPoP    string `json:"assignedPoP,omitempty"`
+	AssignedRegion string `json:"assignedRegion,omitempty"`
 }
 
 // Agent maintains one outbound tunnel. Safe for concurrent use.
@@ -112,8 +129,21 @@ type Agent struct {
 	directEndpoint string
 	directVerified bool
 	directErr      string
-	// dialHook lets tests replace the wss dial with an in-memory net.Conn.
-	dialHook func(ctx context.Context) (net.Conn, error)
+
+	// SMART-AUTOSCALE. resolver is the PoP routing hook (nil => static ServerURL).
+	// reconnectReq carries a PROACTIVE graceful-reconnect request from a relay drain
+	// signal to the maintain loop (buffered 1 so repeats coalesce). handoffWG tracks
+	// make-before-break successor goroutines so Stop waits for them. assignedPoP /
+	// assignedRegion are the directory's current assignment, surfaced in Snapshot.
+	resolver       PoPResolver
+	reconnectReq   chan string
+	handoffWG      sync.WaitGroup
+	assignedPoP    string
+	assignedRegion string
+
+	// dialHook lets tests replace the wss dial with an in-memory net.Conn. When set,
+	// it is passed the resolved endpoint so a test can route by assignment.
+	dialHook func(ctx context.Context, endpoint string) (net.Conn, error)
 }
 
 // New returns an idle Agent. Call Start to bring the tunnel up.
@@ -127,7 +157,19 @@ func New(opts Options) *Agent {
 	if opts.MaxBackoff == 0 {
 		opts.MaxBackoff = 30 * time.Second
 	}
-	return &Agent{opts: opts, status: StatusStopped}
+	// SMART-AUTOSCALE: wire the PoP resolver — an explicit one if injected, else a
+	// default HTTP resolver built from DirectoryURL (nil when DirectoryURL is empty,
+	// which keeps the static-ServerURL behavior).
+	resolver := opts.Resolver
+	if resolver == nil {
+		resolver = newHTTPResolver(opts.DirectoryURL, opts.Token, opts.Region)
+	}
+	return &Agent{
+		opts:         opts,
+		status:       StatusStopped,
+		resolver:     resolver,
+		reconnectReq: make(chan string, 1),
+	}
 }
 
 // Start validates options and launches the async dial+maintain loop. It returns
@@ -171,6 +213,9 @@ func (a *Agent) Stop() {
 	if cancel != nil {
 		cancel()
 	}
+	// Wait for any make-before-break successor goroutines to observe the cancel and
+	// exit, so Stop leaves no tunnel goroutine running. Bounded: successors watch ctx.
+	a.handoffWG.Wait()
 }
 
 // PublicURL returns the current public URL, or "" if not connected.
@@ -202,6 +247,27 @@ func (a *Agent) Snapshot() Snapshot {
 		DirectEndpoint: a.directEndpoint,
 		DirectVerified: a.directVerified,
 		DirectError:    a.directErr,
+		AssignedPoP:    a.assignedPoP,
+		AssignedRegion: a.assignedRegion,
+	}
+}
+
+// setAssignment records the directory's current PoP assignment for Snapshot.
+func (a *Agent) setAssignment(pop, region string) {
+	a.mu.Lock()
+	a.assignedPoP = pop
+	a.assignedRegion = region
+	a.mu.Unlock()
+}
+
+// requestReconnect asks the maintain loop to gracefully migrate to the agent's
+// (re-resolved) assigned PoP. Non-blocking + coalescing: a second request while one
+// is already pending is dropped (buffered channel of 1), so a burst of drain signals
+// triggers exactly one migration.
+func (a *Agent) requestReconnect(reason string) {
+	select {
+	case a.reconnectReq <- reason:
+	default:
 	}
 }
 

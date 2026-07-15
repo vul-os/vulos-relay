@@ -89,6 +89,17 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SMART-AUTOSCALE: refuse NEW tunnels while draining (graceful scale-down). The
+	// agent treats this as a retryable error and re-resolves its assigned PoP, so it
+	// migrates to a non-draining node rather than pinning this one. Existing tunnels
+	// are untouched — they were told to reconnect proactively and drain on their own.
+	if s.draining.Load() {
+		s.logInfo("connect refused: PoP draining", logFields{Name: nn, Remote: s.clientIP(r)})
+		writeAck(conn, wire.RegisterAck{Type: "register_ack", OK: false, Error: "relay draining"})
+		c.Close(websocket.StatusPolicyViolation, "draining")
+		return
+	}
+
 	accountID, err := s.cfg.Tokens.Authorize(token, nn)
 	if err != nil {
 		// Never leak which check failed. Log the NAME (public) + remote only — never

@@ -9,6 +9,44 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added — smart CP-driven autoscaler (relay side): PoP heartbeat, graceful drain, zero-drop migration
+
+- **PoP registration + load heartbeat (relay → CP).** A managed relay started with
+  `-cp-url`/`-cp-shared-secret` **and** `-public-endpoint` registers itself
+  (`POST /api/relay/pop/register`) and heartbeats its live load every
+  `-heartbeat-period` (default 12s) — `POST /api/relay/pop/heartbeat` with
+  `active_tunnels`, `bytes_per_sec`, `cpu_pct`, `mem_pct`, `saturation`, `draining`.
+  HMAC-signed (`X-Pop-Sig`, the same scheme as usage reports). Sampled **off the hot
+  path** from existing aggregate counters. **CP-OPTIONAL:** a relay with no CP (or no
+  public endpoint) runs none of it (`tunnel/server/poplink.go`).
+- **Graceful drain control endpoint (CP → relay).** `POST /control/drain` /
+  `/control/undrain` / `GET /control/status` on the admin surface, gated by
+  `X-Relay-Auth: CP_SHARED_SECRET` and **disabled entirely on a CP-less relay**.
+  `drain` stops accepting new tunnels, flips `/readyz` to draining, and broadcasts a
+  proactive reconnect to every agent; the CP polls `active_tunnels` to 0 before
+  terminating the machine (`tunnel/server/drain.go`, `admin.go`).
+- **Proactive reconnect signal (relay → agent).** Delivered as an **agent-terminated**
+  yamux control stream (`/_vulos-relay/agent-control`, `X-Vulos-Relay-Command:
+  reconnect`) that is **never proxied to the box's local app** — the SSRF guard is
+  untouched (`tunnel/internal/wire`, `tunnel/agent/forward.go`).
+- **Routing hook (agent → CP) + make-before-break migration.** With `-directory` set,
+  the agent resolves its assigned nearest/least-loaded PoP
+  (`GET /api/relay/assign?name=…`) on connect **and** reconnect, falling back to
+  `-server` on any directory error. On a drain the agent migrates
+  **make-before-break** — the new tunnel is established before the old one is torn
+  down — so a scale-down drops **zero** connectivity (`tunnel/agent/resolve.go`,
+  `conn.go`). Proven end-to-end (`tunnel/drain_e2e_test.go`).
+- **Bandwidth-efficient forwarding.** The byte path now reuses **pooled 64 KiB
+  buffers** (`sync.Pool` + `io.CopyBuffer`) instead of allocating a 32 KiB scratch
+  buffer per request/splice (`tunnel/server/bufpool.go`, `tunnel/agent/bufpool.go`) —
+  the relay is bandwidth-bound, so this removes a per-byte-path allocation. Streaming
+  + backpressure + the per-agent stream cap are unchanged.
+
+### Removed — dead planning doc
+
+- Deleted `docs/CONSOLIDATION.md` (a "design + plan only, nothing implemented"
+  internal doc whose plan — the 256 MiB upload cap — has since shipped).
+
 ### Removed — Meet-product SFU-host registry (relay is generic reachability only)
 
 - **Dropped the `/api/meet/host/*` SFU-host registry** (`tunnel/server/sfuhost.go`

@@ -38,7 +38,9 @@ func wrapBuffered(c net.Conn, br *bufio.Reader) net.Conn {
 func duplexCopyObserved(a, b net.Conn, m *meter, account string, mx *metrics) {
 	done := make(chan struct{}, 2)
 	cp := func(dst, src net.Conn) {
-		_, _ = io.Copy(dst, &meterReader{r: src, meter: m, account: account, metrics: mx, dir: dirDuplex})
+		// Pooled scratch buffer per direction (no per-splice 32 KiB allocation); a
+		// long-lived WS still meters per chunk via meterReader.
+		_, _ = pooledCopy(dst, &meterReader{r: src, meter: m, account: account, metrics: mx, dir: dirDuplex})
 		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
 			_ = cw.CloseWrite()
 		} else {
