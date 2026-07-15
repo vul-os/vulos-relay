@@ -64,13 +64,6 @@ func main() {
 		// directly exposed re-opens the spoof.
 		trustProxy = flag.Bool("trust-proxy-headers", envOr("VULOS_RELAY_TRUST_PROXY_HEADERS", "") == "1", "trust X-Forwarded-* from a fronting proxy (enable ONLY behind a trusted TLS-terminating edge; off=overwrite to prevent client IP spoofing)")
 
-		// Vulos Meet SFU Phase 2 (BYO / self-host): the SFU-host registry lets a
-		// token-authorized box register a VERIFIED SFU endpoint (POST
-		// /api/meet/host/register) so big calls escalate to media on the operator's
-		// own infra. Off by default — the registry stays empty + resolve returns
-		// available=false unless enabled.
-		sfuHostRegistry = flag.Bool("sfu-host-registry", envOr("VULOS_RELAY_SFU_HOST_REGISTRY", "") == "1", "enable the Vulos Meet SFU-host registry (/api/meet/host/*); off by default")
-
 		// CONSOLIDATION A-1: single-request upload cap. The relay streams the body
 		// (no buffering) so this bounds per-stream duration/abuse, not RAM. 0 keeps
 		// the server-side default (256 MiB); a negative value is refused (never run
@@ -188,8 +181,6 @@ func main() {
 		MaxAgents:         *maxAgents,
 		MaxRequestBytes:   *maxReqBytes,
 		CP:                cp,
-
-		EnableSFUHostRegistry: *sfuHostRegistry,
 
 		NodeID:   *nodeID,
 		Region:   *region,

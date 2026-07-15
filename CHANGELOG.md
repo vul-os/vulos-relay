@@ -9,6 +9,33 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Removed — Meet-product SFU-host registry (relay is generic reachability only)
+
+- **Dropped the `/api/meet/host/*` SFU-host registry** (`tunnel/server/sfuhost.go`
+  and its `-sfu-host-registry` / `VULOS_RELAY_SFU_HOST_REGISTRY` flag,
+  `Config.EnableSFUHostRegistry`). It was a first-party Vulos-Meet placement layer
+  (register/heartbeat/deregister/resolve a big-call media node); the relay is a
+  **generic reachability fabric**, not a media-placement service. **Generic
+  reachability is unchanged and fully retained:** the reverse tunnel, the verified
+  direct-endpoint fast path (`directprobe.go`), the SSRF-guarded probe, cross-instance
+  notify (`/api/s2s/notify`), and TURN-equivalent HTTP/WS fallback all stay. A box
+  that self-hosts a real-time app (Jitsi, Element Call, a Matrix homeserver, its own
+  TURN/SFU node) is still made reachable exactly as before — WebRTC media rides
+  ICE/TURN directly and prefers the box's verified direct endpoint, as it always did.
+
+### Added — agent public-API + self-host contract tests
+
+- **Agent connect-path coverage** (`tunnel/agent/api_test.go`) — `validateOptions`
+  (incl. the config-time SSRF loopback guard), `controlURL` scheme
+  normalization/enforcement + path preservation, a Snapshot **token-non-leak**
+  regression, lifecycle (`Stop` clears `PublicURL`), bounded log ring, and the
+  async maintain-loop error path via an injected dial hook.
+- **Self-host / no-CP contract** (`tunnel/server/standalone_test.go`) — pins that a
+  relay with no Vulos Cloud link keeps tunnelling: the entitlement gate and usage
+  meter are inert (every account admitted, nothing metered, over-quota push a no-op),
+  the server constructs + serves without a CP, yet still fails closed on a missing
+  domain/token store (never runs open).
+
 ### Added — geo-distributed pool + autoscale-on-saturation (Go reverse-tunnel)
 
 - **New `tunnel/autoscale` package** — provider-agnostic, app-level capacity control

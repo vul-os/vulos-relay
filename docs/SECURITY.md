@@ -73,7 +73,7 @@ What each party can and cannot do, per the code:
 |---|---|---|
 | **Malicious public visitor** | hit whatever the local app exposes; consume rate-limit budget | spoof its source IP to the box's app (XFF overwritten); reach the agent's LAN (loopback lock); learn why an auth attempt failed; hold a connection past the bounds |
 | **Holder of a stolen agent token** | serve the granted name(s) from their own machine *once the real agent is offline* | displace a live session (first-come name hold); serve ungranted names; survive revocation/expiry (sweep cuts within ~20 s) |
-| **Malicious/compromised box** | expose its own app; advertise endpoints *it actually controls* | advertise a victim's IP/hostname (nonce-echo ownership proof); make the relay probe internal targets (SSRF screen + auth-before-probe); notify or resolve SFUs across accounts (same-account guards) |
+| **Malicious/compromised box** | expose its own app; advertise endpoints *it actually controls* | advertise a victim's IP/hostname (nonce-echo ownership proof); make the relay probe internal targets (SSRF screen + auth-before-probe); notify another account's box across accounts (same-account guard) |
 | **Compromised relay** | read/modify all tunneled traffic; refuse service | reach anything on the box except the one loopback port (agent-side SSRF guard, re-checked per stream); read direct-path traffic; extract tokens from logs/metrics |
 | **Compromised control plane** | deny/revoke linked accounts; skew billing verdicts | affect unlinked/self-host grants (no CP involved); cut a live tunnel via a mere outage (mid-session fail-open — only definitive verdicts cut) |
 
@@ -189,7 +189,7 @@ disables that limiter:
 
 | Limiter | Key | Default | Protects against |
 |---|---|---|---|
-| Control connections (also S2S-notify, SFU-host) | client IP | 5/s, burst 20 | auth-guessing and CP-round-trip churn, *before* a WS upgrade is spent |
+| Control connections (also S2S-notify) | client IP | 5/s, burst 20 | auth-guessing and CP-round-trip churn, *before* a WS upgrade is spent |
 | Public requests | tunnel name | 50/s, burst 100 | one tunnel being flooded (or flooding) |
 | Public requests | global | 500/s, burst 1000 | aggregate overload of the relay |
 
@@ -243,8 +243,6 @@ Also unauthenticated by design, because they carry no user data and mutate nothi
   request there).
 - `GET /_vulos-direct/probe` **on the box** — must be exempt from the box's auth
   stack, but serves only the relay's nonce echo and nothing else.
-- `GET /api/meet/host/resolve?name=…` — scoped to the named tunnel's own
-  registration; the SFU's own token gate still admits each joiner.
 
 ---
 
@@ -253,8 +251,8 @@ Also unauthenticated by design, because they carry no user data and mutate nothi
 Everything the relay tells clients about *where else* to connect is verified, and
 everything boxes can make the relay do is tenant-scoped:
 
-- **Direct endpoints and SFU hosts are never trusted on the box's word.** Before
-  advertising either, the relay probes the endpoint over the public internet with a
+- **Direct endpoints are never trusted on the box's word.** Before
+  advertising one, the relay probes the endpoint over the public internet with a
   fresh 256-bit nonce (`X-Vulos-Direct-Probe`) and requires the nonce echoed back —
   proof the advertiser actually serves that TLS endpoint, so a box cannot point
   clients (or the relay's probe) at a victim. The probe itself is SSRF-guarded in
@@ -272,8 +270,6 @@ everything boxes can make the relay do is tenant-scoped:
   a caller-supplied URL here: it forwards only over the target's already-established
   tunnel, to a fixed path (`/api/notify/receive`).
   ([s2snotify.go](../tunnel/server/s2snotify.go))
-- **SFU-host resolve is name-scoped** for the same reason: an unscoped "first live
-  host" would hand one tenant's clients another tenant's media node.
 
 ---
 
@@ -337,4 +333,4 @@ acknowledgement within 72 hours. See the repo-level [SECURITY.md](../SECURITY.md
 the full policy and scope. For the tunnel subsystem, the areas we most want eyes on
 are: agent-auth bypass, name-binding/hijack, SSRF-guard bypass (both directions),
 entitlement/metering integrity, header-trust confusion, and cross-tenant leakage in the
-notify/SFU/resolve surfaces.
+notify/resolve surfaces.

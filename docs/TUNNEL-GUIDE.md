@@ -169,8 +169,7 @@ Every inbound public request is handled independently
    `-path-mode`) matches `/t/<name>/rest` and forwards `rest` (a bare `/t/<name>`
    forwards `/`). Unmatched → `404 no such tunnel`. The public listener also answers
    `GET /healthz` (`ok agents=N`) and owns a small set of relay control routes matched
-   *before* name routing: `/_vulos-direct/resolve`,
-   `/api/meet/host/{register,heartbeat,deregister,resolve}`, and `/api/s2s/notify`.
+   *before* name routing: `/_vulos-direct/resolve` and `/api/s2s/notify`.
 2. **Rate limits.** Global token bucket (default 500 req/s, burst 1000), then
    per-tunnel bucket (default 50 req/s, burst 100). Both return `429` with
    `Retry-After: 1`.
@@ -246,7 +245,7 @@ advertised port.
 
 **Relay side — the direct-probe screen**
 ([directprobe.go](../tunnel/server/directprobe.go)). When a box advertises a direct
-endpoint (or registers an SFU host), the relay must probe a box-supplied URL — classic
+endpoint, the relay must probe a box-supplied URL — classic
 SSRF surface, guarded in depth:
 
 - `https://` bare origins only: no path, query, fragment, or userinfo may be smuggled
@@ -316,8 +315,7 @@ SSE. It is deliberately not the transport for workloads with a better path:
 | Traffic | Path | Relay's role |
 |---|---|---|
 | App HTTP/API, SSE, WebSocket | relay tunnel (or verified direct endpoint) | full reverse proxy |
-| **Real-time media (calls/meetings)** | WebRTC over **ICE/TURN**, mesh or an SFU node | **none on the RTP** — media never rides the tunnel |
-| Big-call SFU placement | box's own SFU worker | relay only *registers and resolves* the node (below) |
+| **Real-time media (calls/meetings)** | WebRTC over **ICE/TURN**, mesh or a self-hosted SFU/TURN node | **none on the RTP** — media never rides the tunnel |
 | Cross-instance notifications | relay `POST /api/s2s/notify` → target box's existing tunnel | forwarder (fixed target path, same-account only) |
 | Browser P2P collaboration (`@vulos/relay-client` SDK) | WebRTC data channels + the host app's HTTP relay-circuit | not this subsystem at all |
 
@@ -325,16 +323,12 @@ SSE. It is deliberately not the transport for workloads with a better path:
 TCP-based, HTTP-shaped tunnel: one lost packet stalls every multiplexed stream behind it
 (head-of-line blocking), and retransmission is the wrong recovery for audio/video. So
 calls ride WebRTC — ICE for NAT traversal, TURN as the media-relay fallback — entirely
-outside this tunnel. The one thing the tunnel subsystem contributes is *placement*: the
-optional **SFU-host registry** ([sfuhost.go](../tunnel/server/sfuhost.go)) lets a
-token-authorized box register its own SFU worker (`POST /api/meet/host/register`,
-heartbeat within a 90 s TTL, `deregister`), with the endpoint proven by the **same**
-nonce-echo, SSRF-guarded verifier as the direct fast path. Clients then
-`GET /api/meet/host/resolve?name=<their-own-tunnel-name>` — scoped by name so one
-account's clients can never be handed another account's SFU. The whole registry is off
-by default (`-sfu-host-registry` / `VULOS_RELAY_SFU_HOST_REGISTRY=1`; off ⇒
-register/heartbeat/deregister `404`, resolve says `available:false`), and even enabled
-it is inert until a box registers. The SFU's RTP still never touches the relay.
+outside this tunnel. A box that self-hosts a real-time app (Jitsi, Element Call, a
+Matrix homeserver, its own TURN/SFU node) is made **reachable** through the relay for its
+HTTP/WS signalling and page load exactly like any other app, and when it advertises a
+public direct endpoint the relay's verified fast path is the ideal transport for that
+media node. The relay is a **generic reachability fabric** — it deliberately runs **no**
+first-party SFU and no media-placement service; RTP never touches it.
 
 **Honest limitation:** this is not a raw TCP/UDP tunnel. There is no SSH/arbitrary-TCP
 mode (unlike `frp`'s TCP proxy). Non-HTTP protocols are out of scope.

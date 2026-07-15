@@ -28,9 +28,9 @@ latency), and over the always-works relay tunnel otherwise (NAT/CGNAT). Relay ca
 **web-shaped traffic** — HTTP, WebSocket, and SSE — which is the request/response and
 event-stream shape every VulOS surface speaks. It is deliberately *not* the transport
 for the two workloads that have their own better path: **real-time media** rides
-WebRTC over **ICE/TURN** (mesh, or an SFU node — Relay only *registers and resolves*
-that node, §SFU-host registry, never forwards its RTP), and **mail** rides the
-dedicated HTTP **spool → forward** edge. Relay ships **two complementary
+WebRTC over **ICE/TURN** directly (mesh, or a self-hosted SFU/TURN node the box
+reaches over its verified direct endpoint — Relay never forwards RTP), and **mail**
+rides the dedicated HTTP **spool → forward** edge. Relay ships **two complementary
 deliverables**:
 
 - **`@vulos/relay-client`** (JS/TS SDK) — wires browser peers together with
@@ -365,14 +365,12 @@ internet-facing:
   carries plaintext only for NAT'd boxes with no direct path — for relay-blindness there,
   use a verified direct endpoint or a self-run relay. See
   [docs/SECURITY.md](docs/SECURITY.md) and [docs/TUNNEL.md](docs/TUNNEL.md).
-- **SFU-host registry (optional, off by default)** — the same verify-then-serve
-  machinery placed onto big-call media: a box registers a self-hosted/BYO SFU worker
-  (`POST /api/meet/host/register`, endpoint verified by the **same** directprobe
-  verifier) and its clients **`resolve` a reachable SFU endpoint scoped by tunnel
-  name** for a video app's mesh→SFU escalation. Relay only registers and resolves the
-  media node — the RTP never touches it (that's ICE/TURN). Gated behind
-  `-sfu-host-registry`; inert until a box registers. See
-  [docs/TUNNEL.md](docs/TUNNEL.md#sfu-host-registry-optional-off-by-default).
+- **Real-time media stays off the tunnel** — a box hosting a real-time app (Jitsi,
+  Element Call, a Matrix homeserver, …) is made **reachable** through the relay for its
+  HTTP/WS signalling like any other app, while WebRTC media (RTP) rides **ICE/TURN**
+  directly and prefers the box's verified direct endpoint. The relay is a generic
+  reachability fabric and TURN-equivalent HTTP/WS fallback — **not** a first-party SFU or
+  media-placement service. See [docs/TUNNEL.md](docs/TUNNEL.md#real-time-media-callsmeetings).
 - **Bounds** — max agents, max streams/agent, request header cap, a **256 MiB
   request-body cap** (`-max-request-bytes`, `413` on overflow), and keepalive
   dead-peer detection keep memory bounded.

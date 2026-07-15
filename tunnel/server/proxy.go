@@ -40,28 +40,11 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// SFU-HOST REGISTRY (Vulos Meet SFU Phase 2). These are relay-owned control
-	// endpoints, NOT tunnel-proxied paths, so they are matched here before the
-	// name route. They are inert by default: resolve returns available=false and
-	// register is refused unless EnableSFUHostRegistry is set (handlers enforce).
-	switch r.URL.Path {
-	case sfuHostRegisterPath:
-		s.handleSFUHostRegister(w, r)
-		return
-	case sfuHostHeartbeatPath:
-		s.handleSFUHostHeartbeat(w, r)
-		return
-	case sfuHostDeregisterPath:
-		s.handleSFUHostDeregister(w, r)
-		return
-	case sfuHostResolvePath:
-		s.handleSFUHostResolve(w, r)
-		return
-	case s2sNotifyPath:
-		// CROSS-INSTANCE notify forwarding (MINST-06). A relay-owned control route,
-		// NOT a tunnel-proxied path, so it is matched here before the name route. It
-		// authenticates the origin box and forwards the bare notification to the
-		// target box over the target's existing tunnel (SSRF-safe by construction).
+	// CROSS-INSTANCE notify forwarding (MINST-06). A relay-owned control route,
+	// NOT a tunnel-proxied path, so it is matched here before the name route. It
+	// authenticates the origin box and forwards the bare notification to the
+	// target box over the target's existing tunnel (SSRF-safe by construction).
+	if r.URL.Path == s2sNotifyPath {
 		s.handleS2SNotify(w, r)
 		return
 	}

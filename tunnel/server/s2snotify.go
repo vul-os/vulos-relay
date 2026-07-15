@@ -27,7 +27,7 @@ package server
 // AUTH (fail-closed): the bearer token must be authorized (TokenStore.Authorize)
 // for the `sender` name — the SAME grant that authorizes the origin box's own
 // tunnel. This proves the caller is a legitimate box and resolves its account.
-// An unauthorized/missing token is refused (401). This mirrors authorizeSFUHost.
+// An unauthorized/missing token is refused (401).
 //
 // CROSS-TENANT GUARD (fail-closed): on the SHARED cloud relay a token→account
 // mapping alone would let account A POST a notification into account B's box (a
@@ -35,8 +35,8 @@ package server
 // require it to belong to the SAME account as the authenticated sender. A
 // mismatch is refused (403). Unbilled/self-host (accountID "") is single-tenant
 // by construction, so a "" sender may only reach a "" target — never a billed
-// one, and vice-versa. This is the same one-account-per-name discipline the
-// SFU-host registry enforces (P1-2).
+// one, and vice-versa (the same one-account-per-name discipline the tunnel
+// registry enforces).
 //
 // SSRF-SAFE BY CONSTRUCTION: the relay never dials an attacker-supplied URL. It
 // only ever forwards over an ALREADY-ESTABLISHED yamux tunnel that the target
@@ -46,8 +46,7 @@ package server
 //
 // BEST-EFFORT / NON-FATAL: every failure (no such tunnel, target offline, tunnel
 // error) returns a small non-2xx the origin box logs and ignores — local
-// delivery already occurred. Nothing here can break an existing tunnel or the
-// SFU-host registry.
+// delivery already occurred. Nothing here can break an existing tunnel.
 
 import (
 	"bufio"
@@ -140,8 +139,8 @@ func (s *Server) handleS2SNotify(w http.ResponseWriter, r *http.Request) {
 }
 
 // authorizeS2SSender validates the bearer token against the sender's own tunnel
-// name and returns the resolved account ("" = unbilled/self-host). Mirrors
-// authorizeSFUHost: same throttle, same fail-closed posture, same grant.
+// name and returns the resolved account ("" = unbilled/self-host). Same throttle,
+// fail-closed posture, and grant discipline as the control path's tunnel auth.
 func (s *Server) authorizeS2SSender(w http.ResponseWriter, r *http.Request, sender string) (string, bool) {
 	if !s.ctrlLimiter.allow(s.clientIP(r)) {
 		s.metrics.rateLimitReject(limitControl)
@@ -219,4 +218,12 @@ func (s *Server) forwardS2SNotify(r *http.Request, sess *session, notification j
 		return fmt.Errorf("target returned status %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// writeJSON writes a JSON body with a status code and no-store caching.
+func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(v)
 }
