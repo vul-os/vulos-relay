@@ -64,13 +64,15 @@ self-hostable on its own, and hosted as an app by the **Vulos OS**:
 
 | Product | What it is |
 |---------|------------|
-| **Vulos Mail** | Mail + calendar + contacts |
 | **Vulos Talk** | Team chat + channels/Spaces + huddles |
 | **Vulos Meet** | Video meetings (LiveKit SFU) |
 | **Vulos Office** | Documents: docs, sheets, slides, PDF |
+| **Vulos Board** | Collaborative whiteboard (`@vulos/board-ui`) |
 | **Vulos Relay** | **← this repo** — sovereign connectivity fabric: `@vulos/relay-client` SDK + a self-hosted Go reverse-tunnel |
-| **Vulos Workspace** | An OS-hosted productivity hub consolidating Mail, Office, Talk & Meet |
+| **Vulos Workspace** | An OS-hosted productivity hub consolidating Office, Talk, Meet & Board |
 | **Vulos OS** | The web-native desktop (the shell that hosts the suite apps) |
+
+**Mail is a connector, not a product:** bring your own mailbox (Gmail / Microsoft 365 / IMAP) into Workspace and the OS via **lilmail** (the IMAP/SMTP connector client) and the shared **`@vulos/mail-ui`** inbox surface.
 
 **Relay's role:** it is the connectivity fabric the rest of the suite is built
 on. The SDK is consumed directly by the VulOS web surfaces — the
