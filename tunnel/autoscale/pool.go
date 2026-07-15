@@ -38,7 +38,7 @@ type Node struct {
 	// Provider is an informational tag (e.g. "hetzner", "vultr"). Not used for
 	// routing decisions; handy for observability + capacity planning.
 	Provider string
-	// Addr is the node's reachable base (e.g. "https://hel1.relay.vulos.net"). Used
+	// Addr is the node's reachable base (e.g. "https://hel1.relay.vulos.org"). Used
 	// as the default health-probe target and returned to a router.
 	Addr string
 	// HealthURL, if set, overrides the probe URL (default: Addr + "/readyz").
