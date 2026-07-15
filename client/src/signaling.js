@@ -59,6 +59,9 @@
  *   regardless of `requirePeerAuth`.
  */
 
+import { SignalingError } from './errors.js'
+import { tokenTransportSecure } from './secureTransport.js'
+
 const RECONNECT_BASE_MS = 1_000
 const RECONNECT_MAX_MS = 30_000
 const RECONNECT_MAX_ATTEMPTS = 10  // after this many failures emit 'offline'
@@ -221,6 +224,23 @@ export class SignalingClient extends EventTarget {
     requirePeerAuth = false,
   }) {
     super()
+
+    // ── Credential-transport guard (security: plaintext token leak) ──────────
+    // The auth JWT rides on this socket (subprotocol header or, legacily, the
+    // query string). If the signaling URL is plaintext ws:// to a non-loopback
+    // host the token would travel in the clear — readable on-path and captured
+    // in proxy/access logs. Refuse to construct a client that would leak it
+    // (fail closed): wss:// is required; ws:// is permitted only to a loopback
+    // host for local dev. A client with NO token may use ws:// freely — the
+    // signaling frames are ECDSA-signed, so there is no credential to protect.
+    if (authToken && !tokenTransportSecure(signalingUrl)) {
+      throw new SignalingError(
+        'refusing to attach the auth token to an insecure signaling transport: ' +
+        'wss:// is required (ws:// is permitted only to a loopback host for local dev)',
+        { code: 'INSECURE_TOKEN_TRANSPORT' },
+      )
+    }
+
     this._url = signalingUrl
     this._session = sessionId
     this._peerId = peerId

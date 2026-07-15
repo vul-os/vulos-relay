@@ -1,9 +1,11 @@
 /**
  * regionPop.js — @vulos/relay-client region-aware PoP/endpoint selection.
  *
- * Phase-0 hook for multi-region relay infrastructure.  Today the map is a
- * single-cell `eu` entry; additional regions are wired in as config-only
- * changes to REGION_POP_MAP — no code changes required.
+ * Phase-0 hook for multi-region relay infrastructure.  The live cell is `eu`;
+ * Johannesburg (`jhb`) is the finalized second PoP per the relay infra topology
+ * (relay is the one bandwidth-bound cloud job, run close to the user). Each
+ * additional region is wired in as a config-only change to REGION_POP_MAP — no
+ * code changes required — once its PoP hostname is provisioned.
  *
  * Design contract:
  *   • Additive only — callers that do not pass a region get the exact same

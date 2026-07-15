@@ -33,6 +33,8 @@ import {
   relayBlobVersion, sealRelayBlobV2, parseRelayBlobV2, openRelayBlobV2,
 } from './relayBox.js'
 import { PreKeyStore, x3dhInitiate, x3dhRespond } from './prekeys.js'
+import { tokenTransportSecure } from './secureTransport.js'
+import { RelayDepositError } from './errors.js'
 
 /**
  * Byte-length of a relay payload datum.  Used by the billing meter to count
@@ -107,6 +109,33 @@ export class FabricClient extends EventTarget {
     requirePeerAuth = true,
   }) {
     super()
+
+    // ── Credential-transport guard (security: plaintext token leak) ──────────
+    // When an authToken is configured it is attached as `Authorization: Bearer`
+    // to the ICE, relay deposit/pickup/ack and prekey fetches. Any of those
+    // going to a plaintext http:// remote would leak the JWT. Refuse to
+    // construct a client whose ICE or relay base URL would carry the token in
+    // the clear (fail closed): https:// is required; http:// is permitted only
+    // to a loopback host for local dev. Same-origin ('') / relative URLs inherit
+    // the page origin and are always allowed. (The signaling URL is validated
+    // separately by SignalingClient below.)
+    if (authToken) {
+      if (!tokenTransportSecure(relayBaseUrl)) {
+        throw new RelayDepositError(
+          'refusing to attach the auth token to an insecure relay base URL: ' +
+          'https:// is required (http:// is permitted only to a loopback host for local dev)',
+          { code: 'INSECURE_TOKEN_TRANSPORT' },
+        )
+      }
+      if (!tokenTransportSecure(iceUrl)) {
+        throw new RelayDepositError(
+          'refusing to attach the auth token to an insecure ICE URL: ' +
+          'https:// is required (http:// is permitted only to a loopback host for local dev)',
+          { code: 'INSECURE_TOKEN_TRANSPORT' },
+        )
+      }
+    }
+
     this._session = sessionId
     this._peerId = peerId
     this._iceUrl = iceUrl
