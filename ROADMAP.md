@@ -50,7 +50,7 @@ priorities shift with Vulos OS milestones.
 - **QUIC / WebTransport signaling** — fall back to WebSocket for browsers that
   lack WebTransport support; prefer QUIC when available.
 - **Adaptive bitrate hint** — expose an `onNetworkQuality` callback so the OS
-  shell and vulos-office can throttle CRDT sync frequency under poor connectivity.
+  shell and Ofisi can throttle CRDT sync frequency under poor connectivity.
 
 ### Security
 - **End-to-end key agreement** — optional ECDH handshake over the signaling

@@ -14,9 +14,9 @@ It does not bundle a server.
 ## Part of VulOS
 
 **Vulos Relay** is the connectivity fabric of the [VulOS](https://vulos.org)
-suite — open, self-hostable products (OS, Office, Board, Files, Relay, llmux),
+suite — open, self-hostable products (OS, Ofisi, Board, Files, Relay, llmux),
 each usable alone and hosted as apps by the **Vulos OS** (the shell). This SDK is
-consumed directly by the suite's web surfaces (the Vulos OS shell, Vulos Office);
+consumed directly by the suite's web surfaces (the Vulos OS shell, Ofisi);
 the OS surfaces Relay-powered features but never imports product code. The package
 has no Vulos-specific runtime dependency — it **runs standalone** against any
 backend that implements the peering contract, **and** slots into the OS-hosted suite.
