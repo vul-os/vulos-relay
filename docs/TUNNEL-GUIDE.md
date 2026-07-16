@@ -12,10 +12,14 @@ file references point at the authoritative code.
 
 ## Transport stack
 
-```
-public HTTPS request ──► relay ──► yamux stream ──► agent ──► TCP to 127.0.0.1:PORT
-                                     inside ONE
-                          wss:// WebSocket the agent dialed
+```mermaid
+flowchart LR
+  Req["public HTTPS request"] --> R["relay"]
+  R --> Y
+  subgraph WSS["inside ONE wss:// WebSocket the agent dialed"]
+    Y["yamux stream"] --> A["agent"]
+  end
+  A --> T["TCP to 127.0.0.1:PORT"]
 ```
 
 Layer by layer, from the agent's point of view:

@@ -8,15 +8,18 @@ This guide takes you from zero to a publicly reachable Vulos box: you will run (
 
 ## What you are setting up
 
-```
-   public client                relay server (public)             your box (loopback only)
-        │  https://box1.relay.example.com   │                              │
-        ├───────────────────────────────────►                              │
-        │                                   │  yamux stream (1/request)    │
-        │                                   ├─────────────────────────────►│  vulos-relay-agent
-        │                                   │  over ONE outbound wss       │      │ dials 127.0.0.1:8080
-        │◄──────────── response ────────────┤◄─────────────────────────────┤      ▼
-        │                                   │                              │  your local app
+```mermaid
+sequenceDiagram
+  participant C as public client
+  participant R as relay server (public)
+  participant A as vulos-relay-agent (your box, loopback only)
+  participant App as your local app
+  C->>R: GET https://box1.relay.example.com
+  R->>A: yamux stream (1 per request), over ONE outbound wss
+  A->>App: dials 127.0.0.1:8080
+  App-->>A: response
+  A-->>R: response
+  R-->>C: response
 ```
 
 Two binaries, both in this repo:
