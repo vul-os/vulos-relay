@@ -376,6 +376,49 @@ internet-facing:
   **off the hot path** (it only reads aggregate counters) — the relay is bandwidth-
   bound, so bytes are direct COGS.
 
+### Self-hosting a Vulos relay (one command)
+
+**What it does.** Stands up the public relay server (`vulos-relayd`) on a host you
+control, so a NAT'd/CGNAT box can publish itself at `https://<name>.<your-domain>`.
+
+**When you need it.** Only if a box lacks public reachability, or you want a stable
+public hostname you own. A box that already has a public IP + domain can be reached
+directly and does **not** need a relay.
+
+**One command** (needs Docker + Docker Compose):
+
+```bash
+./scripts/install.sh --domain relay.example.com
+```
+
+The script generates a strong agent token, writes `grants.json` + `.env` (both
+git-ignored — they hold bearer secrets), brings the relay up via
+[`docker-compose.yml`](docker-compose.yml), health-checks it, and prints the exact
+`vulos-relay-agent` command to run on your box. Flags: `--path-mode` (no wildcard
+DNS), `--name <box>`, `--no-up` (write config only), `--force` (rotate token /
+rewrite config), `--image <ref>`. Re-running without `--force` never clobbers your
+existing secrets.
+
+**Config, ports, TLS, health:**
+
+- **Ports.** The relay serves the public tunnel on `:8443` (map it behind your
+  edge). `/metrics` + `/healthz` + `/readyz` live on a **separate** loopback-only
+  admin listener (`127.0.0.1:9090`) and are intentionally not published.
+- **TLS.** The relay speaks plain HTTP — terminate TLS at your edge/CDN (Caddy,
+  nginx, Traefik, Fly, Cloudflare) and forward `:443 → :8443`, **or** mount certs
+  and set `RELAY_EXTRA_ARGS=-cert … -key …` to terminate in-process.
+- **DNS.** Subdomain mode (default): point `relay.example.com` **and**
+  `*.relay.example.com` at the host. Path mode (`--path-mode`): just the apex,
+  tunnels served at `https://relay.example.com/t/<name>/`.
+- **Health check.** `curl -fsS https://relay.example.com/healthz` (through your
+  edge) or `docker exec vulos-relayd wget -qO- http://127.0.0.1:8443/healthz`.
+- **Env/config reference.** `VULOS_RELAY_DOMAIN`, `VULOS_RELAY_TOKENS`,
+  `VULOS_RELAY_PATH_MODE`, `VULOS_RELAY_TRUST_PROXY_HEADERS`, and the optional
+  Cloud-linking vars are documented inline in `.env` and fully in
+  [docs/TUNNEL.md](docs/TUNNEL.md#flags--env).
+
+Prefer to run the binaries directly (no Docker)? The same setup by hand:
+
 ```bash
 # relay server. Serves the public tunnel on -addr; serves /metrics + /healthz +
 # /readyz on a SEPARATE admin listener (default 127.0.0.1:9090, loopback-only).

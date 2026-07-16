@@ -1,0 +1,83 @@
+# docker-compose.yml — one-command self-host of a sovereign Vulos relay.
+#
+#   ./scripts/install.sh          # generates .env + grants.json, then brings this up
+#   docker compose up -d          # if you prefer to configure by hand
+#
+# What this runs: the PUBLIC half of the Vulos reverse tunnel (vulos-relayd) —
+# the self-hosted replacement for a third-party frp server. A box elsewhere runs
+# `vulos-relay-agent` (the "agent" profile below, or a binary on the box itself),
+# dials ONE outbound wss:// connection here, and this relay serves it a public
+# URL. See docs/GETTING-STARTED.md and docs/TUNNEL.md.
+#
+# TLS: this compose runs the relay as PLAIN HTTP on :8443 and expects you to put
+# a TLS-terminating reverse proxy / CDN in front (Caddy, nginx, Traefik, Fly,
+# Cloudflare). If you would rather have the relay terminate TLS itself, mount
+# your certs and set RELAY_EXTRA_ARGS=-cert /tls/fullchain.pem -key /tls/privkey.pem
+# (see the commented volume + the env below).
+
+services:
+  relay:
+    # Pull the published multi-binary image, or build locally from this repo.
+    image: ${RELAY_IMAGE:-ghcr.io/vul-os/vulos-relayd:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vulos-relayd
+    restart: unless-stopped
+    # Public control/data port. Terminate TLS at your edge and forward to this.
+    ports:
+      - "${RELAY_PUBLIC_PORT:-8443}:8443"
+    environment:
+      # REQUIRED — your relay's base domain. Tunnels are served at
+      # https://<name>.${VULOS_RELAY_DOMAIN} (or /t/<name>/ in path mode).
+      VULOS_RELAY_DOMAIN: ${VULOS_RELAY_DOMAIN:?set VULOS_RELAY_DOMAIN (run scripts/install.sh)}
+      # REQUIRED — agent grants: a JSON array of {token, names}. install.sh
+      # generates this for you; keep it secret (tokens are bearer credentials).
+      VULOS_RELAY_TOKENS: ${VULOS_RELAY_TOKENS:?set VULOS_RELAY_TOKENS (run scripts/install.sh)}
+      # No wildcard DNS? Set VULOS_RELAY_PATH_MODE=1 to also serve /t/<name>/.
+      VULOS_RELAY_PATH_MODE: ${VULOS_RELAY_PATH_MODE:-}
+      # Turn ON only when a TRUSTED TLS-terminating proxy/CDN fronts this relay
+      # (preserves the real client IP). Leave OFF if directly internet-facing
+      # (default; the relay overwrites X-Forwarded-* so clients can't spoof).
+      VULOS_RELAY_TRUST_PROXY_HEADERS: ${VULOS_RELAY_TRUST_PROXY_HEADERS:-1}
+      # Optional Vulos Cloud account-linking/metering. Empty ⇒ UNBILLED self-host.
+      VULOS_CP_URL: ${VULOS_CP_URL:-}
+      CP_SHARED_SECRET: ${CP_SHARED_SECRET:-}
+      VULOS_RELAY_POP_ID: ${VULOS_RELAY_POP_ID:-}
+    # Extra flags (e.g. in-process TLS, rate limits) appended to the entrypoint.
+    command: ${RELAY_EXTRA_ARGS:-}
+    # To terminate TLS in-process, mount your certs and set RELAY_EXTRA_ARGS
+    # (see header). The admin/metrics listener stays loopback-bound inside the
+    # container and is intentionally NOT published.
+    # volumes:
+    #   - ./tls:/tls:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8443/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+
+  # OPTIONAL — run the box-side agent here too (e.g. to expose a service that
+  # runs in this same compose project). Most self-hosters instead run the agent
+  # as a binary/container ON THE BOX being exposed. Enable with:
+  #   docker compose --profile agent up -d
+  agent:
+    image: ${RELAY_IMAGE:-ghcr.io/vul-os/vulos-relayd:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vulos-relay-agent
+    profiles: ["agent"]
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/vulos-relay-agent"]
+    # These are only consulted when the "agent" profile is active. They use plain
+    # (non-required) interpolation so `docker compose up -d` for the relay alone —
+    # and `docker compose config` — never trip over them; the agent binary itself
+    # errors clearly if server/token/name are empty.
+    environment:
+      VULOS_RELAY_SERVER: ${AGENT_SERVER:-}   # e.g. wss://relay.example.com
+      VULOS_RELAY_TOKEN: ${AGENT_TOKEN:-}     # one of the grant tokens
+      VULOS_RELAY_NAME: ${AGENT_NAME:-}       # e.g. box1
+    # -local must be a loopback target on the agent's network namespace.
+    command: ["-local", "${AGENT_LOCAL:-127.0.0.1:8080}"]
