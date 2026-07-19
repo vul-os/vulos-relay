@@ -50,7 +50,9 @@ func main() {
 	// relay on loopback. Warn LOUDLY at runtime so it can never be shipped silently;
 	// against a NON-loopback target it is especially dangerous, so shout even louder.
 	if *insecure {
-		loud := func(msg string) { log.Printf("\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n%s\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!", msg) }
+		loud := func(msg string) {
+			log.Printf("\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n%s\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!", msg)
+		}
 		if serverIsLoopback(*serverURL) {
 			loud("WARNING: -insecure is set — TLS verification of the relay control\n" +
 				"connection (which bears your token) is DISABLED. This is for LOCAL\n" +
