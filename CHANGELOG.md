@@ -47,6 +47,26 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
     dropping an object is this node ceasing to be a holder. Durable **pinning** is
     intentionally not implemented — a pin-capable holder is a compatible separate
     implementation of the same wire protocol.
+  - **CHUNK-TREE RANGE PROOFS (optional, `-pubcache-serve-proofs`)** —
+    `GET {p}/manifest/{id}/proof?chunk=i` → `[i, [siblings…]]` (canonical CBOR),
+    the `substrate/FEEDS.md` § 5.3 endpoint for **verified partial fetch**.
+    Previously a fetcher could only check a chunk by holding the *whole*
+    `PubManifest`; now it folds an **O(log n) audit path** against the root it
+    already trusts from the signed announce — which is what makes **streaming
+    video seek** and **large-file resume** work without trusting the server (a
+    12-hash path instead of a 4096-entry chunk list). It adds **no new trust**:
+    no new object, no new signing preimage, no new § 21 error code, and a holder
+    that does not offer it answers `404` so clients fall back to whole-manifest
+    verification. A proof can only ever be built over a chunk list that already
+    passed the verification gate. Ships the client-side half too —
+    **`VerifyChunkProof`** (plus `ChunkProof`, `EncodeChunkProof`,
+    `DecodeChunkProof`) — because an endpoint nobody can check is not a proof.
+    Responses are immutable and content-addressed by `(id, i)`. Siblings are bare
+    32-byte tree nodes (§ 5.3 leaves this implicit; § 3.2 settles it — the `0x1e`
+    prefix marks *addresses*, and interior nodes are not addresses). The tree
+    matches vidmesh's odd-node **promotion** rule in shape and § 3.2's DS-tagged
+    hashes in value; the two are asserted equal to the § 3.2 RFC 6962 split rule
+    for every `n` up to 300, and a 5-chunk interop vector is pinned byte-for-byte.
 
 ### Added — the open rendezvous role (announce/resolve/signal/mailbox + ICE)
 

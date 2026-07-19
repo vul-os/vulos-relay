@@ -59,6 +59,7 @@ serve this very role itself.
 | `GET {p}/announce/{id}` | `PubAnnounce` | yes — immutable, verified |
 | `GET {p}/manifest/{id}` | `PubManifest` | yes — immutable, verified |
 | `GET {p}/chunk/{h}` | raw plaintext chunk | yes — immutable, verified |
+| `GET {p}/manifest/{id}/proof?chunk=i` | chunk-tree range proof | yes — immutable, **optional** (§ 5) |
 | `GET {p}/feed/{pub}/head` | `FeedHead` | **never** — mutable passthrough |
 | `GET {p}/feed/{pub}/range?from=&to=` | `[FeedEntry]` | **never** — mutable passthrough |
 | `GET {p}/healthz` | liveness + cache counters | n/a |
@@ -145,7 +146,108 @@ these are operator-chosen numbers, not functions of what the internet asks for:
 
 ---
 
-## 5. Eviction is not deletion; pinning is not implemented
+## 5. Chunk-tree range proofs — verified partial fetch (optional)
+
+**`FEEDS.md § 5.3`. OPTIONAL, and off unless `-pubcache-serve-proofs` is set.**
+
+Ordinarily a fetcher verifies a chunk by holding the **whole** `PubManifest`: it
+has every `h_i`, so it can check any chunk byte-for-byte. That is fine for small
+blobs and wasteful for large media — verifying one 1 MiB chunk in the middle of a
+multi-gigabyte video means first pulling a chunk-hash list with thousands of
+entries. The § 22.2.2 tree already commits to every leaf, so an **O(log n)
+inclusion proof** is enough:
+
+```
+GET {p}/manifest/{id}/proof?chunk=i   →   [ i, [ sibling_hashes… ] ]   application/cbor
+```
+
+A client fetches `chunk/{h_i}`, fetches its path, folds the siblings with the
+same DS-tagged `leaf`/`node` functions, and checks the result against the
+`PubManifest.id` it **already trusts from the signed announce**. That is verified
+seek, and verified resume: the machinery under segmented (HLS/DASH) playback and
+under large-file download that survives an interrupted connection.
+
+**This adds no trust.** It allocates no new object, no new signing preimage, and
+no new § 21 error code — it serves a proof the tree already commits to. A lying
+holder cannot forge a path to a root it does not control (BLAKE3 collision
+resistance), so the endpoint is a convenience, never a trust root, exactly like
+every other § 22 read. The endpoint is **advertised by presence**: a holder that
+does not offer it answers `404` and the client falls back to whole-manifest
+verification, so enabling it is purely additive and disabling it breaks nothing.
+
+A proof is only ever built over a chunk list that has **already passed the
+verification gate** (§ 3). The manifest is resolved through the ordinary verified
+read path, so this node cannot emit a path over a list it has not proved.
+
+### Encoding
+
+The body is a canonically-encoded CBOR array `[chunk_index, [siblings…]]`,
+deterministic per § 18.1.2 (minimal heads, definite lengths, no tags). The
+response is immutable and content-addressed by `(id, i)`, so it carries the same
+long `Cache-Control` as the other content-addressed reads and an `ETag` of
+`"{id}.{i}"`.
+
+Siblings are **bare 32-byte tree nodes**, not 33-byte content addresses. § 5.3
+does not state this explicitly, so it is worth being precise: under § 3.2 the
+`leaf`/`node` functions output raw BLAKE3-256, and the `0x1e` multihash prefix is
+applied only where a digest becomes an *address* — at the leaves' **inputs**
+(`h_i`) and at the root when it becomes `PubManifest.id`. Interior nodes are
+never addresses, so they travel bare.
+
+Path elements are ordered **bottom-up**, and a level at which the node is the
+promoted odd one contributes **no element** — see the note on tree shape below.
+
+### Verifying — the client's job, as always
+
+```go
+// root and nChunks come from what the client ALREADY TRUSTS — the signed
+// announce and the manifest header it commits to — never from the same
+// response that carried the proof.
+idx, path, err := pubcache.DecodeChunkProof(body)
+err = pubcache.VerifyChunkProof(root, nChunks, idx, chunkBytes, path)
+```
+
+`VerifyChunkProof` returns `nil` **only** if the chunk is proven; wrong index,
+tampered bytes, a tampered/reordered/truncated/over-long path, and a wrong root
+are all errors, and the chunk must then be discarded (rotate to another holder).
+`ChunkProof(chunks, i)` is the generating side, for anyone serving the endpoint.
+
+**`nChunks` is necessarily out-of-band.** § 5.3's response carries the index and
+the path but **not the tree size**, and RFC 6962 audit-path verification needs
+the size to know where odd-node promotion happens. A client therefore takes it
+from the manifest header it already trusts (`⌈size ÷ chunk_sz⌉`) — two small
+fields, not the chunk list, so the O(log n) saving stands. Note that `nChunks` is
+**structural metadata, not a second authenticator**: two counts that imply the
+same fold shape for a given index accept the same proof, and correctly so — the
+**root** is what authenticates.
+
+### Tree shape, and parity with vidmesh
+
+§ 3.2 specifies the tree by the **RFC 6962 split rule** (recurse on the largest
+power of two below `n`). The proof path here is generated the other way round —
+level by level, pairing left to right and **promoting** a level's unpaired final
+node unchanged — which is the rule *vidmesh* uses, and the one that yields a path
+and a verifier directly. **These are the same tree**, and because that is exactly
+the sort of claim that is true at powers of two and false at `n = 11`, the test
+suite asserts the two constructions agree for every `n` up to 300 rather than
+leaving it as an assertion in a comment.
+
+Structure is shared with vidmesh; **hashes are not**, and deliberately. vidmesh
+hashes `BLAKE3(0x00 ‖ chunk_bytes)` at the leaves with no domain-separation tag;
+§ 3.2 hashes `BLAKE3(DS ‖ 0x00 ‖ h_i)` over the chunk's *address* with
+`DS = "DMTAP-PUB-v0/manifest" ‖ 0x00`. **The spec governs here** — the DS tag is
+what makes a public root and a sealed root over the same chunk list different
+values (§ 3.3), which is a property this role depends on. So a vidmesh proof and
+a DMTAP-PUB proof have the same *shape* and different *values*; they are not
+wire-interchangeable, and § 5.3 never claims they are.
+
+`proof_test.go` pins a 5-chunk interop vector — root and every path, byte for
+byte — for anyone implementing the endpoint elsewhere. Five leaves is the
+smallest tree that promotes an odd node at two levels.
+
+---
+
+## 6. Eviction is not deletion; pinning is not implemented
 
 A content address is **a name, not a promise** (§ 5.5.1). When this node evicts or
 expires an object it is simply **ceasing to be one of the holders** — it has not
@@ -158,7 +260,7 @@ point of describing this as a role rather than a service.
 
 ---
 
-## 6. Configuration reference
+## 7. Configuration reference
 
 | Flag | Env | Default | Meaning |
 |---|---|---|---|
@@ -171,6 +273,7 @@ point of describing this as a role rather than a service.
 | `-pubcache-upstream-timeout` | `VULOS_RELAY_PUBCACHE_UPSTREAM_TIMEOUT` | 15s | one upstream read |
 | `-pubcache-max-inflight` | `VULOS_RELAY_PUBCACHE_MAX_INFLIGHT` | 16 | concurrent upstream fetches, role-wide |
 | `-pubcache-serve-feeds` | `VULOS_RELAY_PUBCACHE_SERVE_FEEDS=1` | off | also proxy the mutable feed reads (never cached) |
+| `-pubcache-serve-proofs` | `VULOS_RELAY_PUBCACHE_SERVE_PROOFS=1` | off | also serve the optional chunk-tree range proofs (§ 5) |
 
 With **no upstreams configured** the role is still valid: it is a holder that
 holds nothing and answers `404` to everything. That is a legitimate node, not a
@@ -178,10 +281,10 @@ misconfiguration — and it is the safest thing an accidental `-pubcache` can do
 
 ---
 
-## 7. Related
+## 8. Related
 
 - **[docs/RENDEZVOUS.md](RENDEZVOUS.md)** — the sibling reachability role
   (announce / resolve / signal / mailbox + ICE), which *is* content-blind.
 - **[docs/SECURITY.md](SECURITY.md)** — what a relay operator can and cannot see.
 - DMTAP `substrate/ROLES.md` § 6 (the role), `22-public-objects.md` (the objects
-  and their verification), `substrate/FEEDS.md` § 5 (the HTTP profile).
+  and their verification), `substrate/FEEDS.md` § 5 (the HTTP profile), § 5.3 (chunk-tree range proofs).
