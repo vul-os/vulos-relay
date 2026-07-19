@@ -10,6 +10,10 @@ document is the *protocol*: anyone can implement a compatible node or client. It
 one of the VulOS substrate **Reachability roles**
 (`announce` / `resolve` / `signal` / `mailbox`, key-addressed).
 
+> **Sibling role.** Cache/pin — serving **public, self-verifying** DMTAP-PUB
+> objects — is documented in **[PUBCACHE.md](PUBCACHE.md)**. It is the one relay
+> role that is *not* content-blind, which is why it is opt-in and separate.
+
 > **Content-blind by construction.** A rendezvous node never inspects, decrypts, or
 > dials application payloads. It stores opaque bytes keyed by public key, gates
 > writes with signatures, and hands blobs to the holder of the private key. It makes

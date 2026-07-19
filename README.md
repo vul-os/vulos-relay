@@ -156,6 +156,17 @@ vs Path B (Vulos-hosted) — are in [GETTING-STARTED.md](docs/GETTING-STARTED.md
   signs the envelope while the per-session ECDSA peer-auth handshake rides
   unchanged inside the opaque payload. Protocol + walkthrough:
   **[docs/RENDEZVOUS.md](docs/RENDEZVOUS.md)** (§ *Using FabricClient without a host box*).
+- **Open cache/pin role** — `vulos-relayd` can also serve the DMTAP-PUB
+  **public-object read surface** (`/.well-known/dmtap-pub/{announce,manifest,chunk}`)
+  as a **verifying read-through cache** in front of configured upstream gateways
+  (enable with `-pubcache`). Public objects are **self-verifying**, so a cache
+  **cannot forge one — only fail to serve it**; this node additionally **refuses to
+  store any object whose bytes do not match its content address**, so a poisoned
+  upstream never becomes a poisoned cache. It is **OFF by default and explicit
+  operator opt-in**, because unlike every other relay role it is **not
+  content-blind**: it serves public plaintext the operator can read. Any node may
+  serve this role — a Vulos PoP is just a well-run instance. Protocol + limits:
+  **[docs/PUBCACHE.md](docs/PUBCACHE.md)**.
 - **Tree-shakeable subpaths** — import only what you need
   (`@vulos/relay-client/endpoints`, `/fabric`, `/presence`, `/rendezvous`, …); the
   `xlsx`-using `roundTripCheck` is deliberately kept out of the root barrel.
@@ -524,6 +535,7 @@ go vet ./...
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Symptom → cause → fix field guide, keyed to literal relay/agent error strings |
 | [docs/TUNNEL.md](docs/TUNNEL.md) | Full server flag/env reference & deploy notes for the Go reverse tunnel (server + agent) |
 | [docs/RENDEZVOUS.md](docs/RENDEZVOUS.md) | The open key-addressed reachability role — announce/resolve/signal/mailbox + ICE wire protocol, auth, and canonical signing (implementable by anyone) |
+| [docs/PUBCACHE.md](docs/PUBCACHE.md) | The open cache/pin role — serving public, self-verifying DMTAP-PUB objects, the verification gate, and every bound on the surface |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Fabric / signaling / endpoint-failover design |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | All SDK options and constructor params |
 | [docs/SCREENSHOTS.md](docs/SCREENSHOTS.md) | Demo harness + screenshot regeneration |

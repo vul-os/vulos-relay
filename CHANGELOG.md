@@ -9,6 +9,45 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added — the open cache/pin role (DMTAP-PUB public objects)
+
+- **`vulos-relayd` can now serve the DMTAP-PUB public-object read surface** (new
+  `tunnel/pubcache` package), enabled with `-pubcache`. It is a **verifying
+  read-through cache** in front of operator-configured upstream § 22.5.1
+  gateways, mounted on the relay's apex host under `/.well-known/dmtap-pub`
+  (never shadowing a tunnel subdomain's own well-known paths). `vulos-relayd` is
+  a reference implementation; **any node may serve this role** — the behaviour is
+  documented in **`docs/PUBCACHE.md`** for anyone to implement.
+  - **VERIFICATION ON STORE (mandatory).** Nothing is cached or served unless its
+    bytes match the content address it was fetched by: announces and chunks by the
+    BLAKE3-256 anchor hash (multihash prefix `0x1e`), manifests by the recomputed
+    **DS-tagged RFC 6962 Merkle root** over their plaintext chunk hashes, plus the
+    key-5 trap (a `PubManifest` carrying a key field is a leaked *sealed* manifest)
+    and self-`id` agreement. A poisoned upstream is logged, refused, and **not
+    retained** — it can never become a poisoned cache.
+  - **FEED HEADS ARE NEVER CACHED.** A `FeedHead` is mutable and
+    signature-authenticated, which hashing cannot check, so it is a bounded
+    `must-revalidate` passthrough behind its own `-pubcache-serve-feeds` opt-in.
+    An object this node cannot verify is an object it does not hold.
+  - **Cacheability per § 22.5.1**: content-addressed objects go out `public,
+    immutable` with a strong `ETag` **equal to the content address**, so any
+    ordinary CDN may front the surface without understanding DMTAP; conditional
+    GETs answer `304`.
+  - **Bounded and SSRF-free by shape**: upstreams are **config-only** (validated at
+    startup, redirects not followed — a client can never name a host), fan-out is
+    capped by a global in-flight semaphore + sequential upstream attempts +
+    single-flight coalescing, objects and the store are byte-capped with LRU
+    eviction and a TTL, feed ranges are span-capped, reads are rate-limited per
+    source address and in aggregate, and there is **no write surface at all**.
+  - **OFF by default, explicit operator opt-in**: unlike the tunnel, mailbox, and
+    rendezvous roles, this one is **not content-blind** — it serves public
+    plaintext the operator can read, which shifts the operator's moderation and
+    liability posture (DMTAP § 22.6.1).
+  - Eviction is **not deletion**: a content address is a name, not a promise, so
+    dropping an object is this node ceasing to be a holder. Durable **pinning** is
+    intentionally not implemented — a pin-capable holder is a compatible separate
+    implementation of the same wire protocol.
+
 ### Added — the open rendezvous role (announce/resolve/signal/mailbox + ICE)
 
 - **`vulos-relayd` now serves the open key-addressed reachability role** (new

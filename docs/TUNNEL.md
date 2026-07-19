@@ -312,6 +312,23 @@ on the relay's apex host.
 | `-rendezvous-turn-secret` | `VULOS_RELAY_TURN_SECRET` | — | coturn static-auth-secret used to mint short-lived TURN credentials; **never sent to clients**. |
 | `-rendezvous-turn-ttl` | `VULOS_RELAY_TURN_TTL` | `0` (⇒ 12h) | Lifetime of a minted TURN credential. |
 
+**Cache/pin role** (DMTAP-PUB public objects — see [PUBCACHE.md](PUBCACHE.md)).
+Off by default and **explicit operator opt-in**: unlike every other role, it serves
+**public plaintext the operator can read**. Served on the relay's apex host; nothing
+is cached or served unless its bytes match its content address.
+
+| Flag | Env | Default | Meaning |
+|---|---|---|---|
+| `-pubcache` | `VULOS_RELAY_PUBCACHE` | `off` | Enable the cache/pin role. |
+| `-pubcache-prefix` | `VULOS_RELAY_PUBCACHE_PREFIX` | `/.well-known/dmtap-pub` | Mount prefix for the role's routes. |
+| `-pubcache-upstreams` | `VULOS_RELAY_PUBCACHE_UPSTREAMS` | — | Comma-separated § 22.5.1 gateway base URLs, tried in order. **The only hosts this role will contact** — a client can never name one. Empty ⇒ a holder that holds nothing (404s everything). |
+| `-pubcache-max-object-bytes` | `VULOS_RELAY_PUBCACHE_MAX_OBJECT` | `0` (⇒ 16 MiB) | Per-object size cap; an oversize object is refused, not stored. |
+| `-pubcache-max-bytes` | `VULOS_RELAY_PUBCACHE_MAX_BYTES` | `0` (⇒ 256 MiB) | Total cache cap, enforced by LRU eviction. |
+| `-pubcache-ttl` | `VULOS_RELAY_PUBCACHE_TTL` | `0` (⇒ 1h) | Per-object cache lifetime (a space/freshness policy — objects are immutable). |
+| `-pubcache-upstream-timeout` | `VULOS_RELAY_PUBCACHE_UPSTREAM_TIMEOUT` | `0` (⇒ 15s) | Timeout for one upstream read. |
+| `-pubcache-max-inflight` | `VULOS_RELAY_PUBCACHE_MAX_INFLIGHT` | `0` (⇒ 16) | Concurrent upstream fetches across the whole role (bounded fan-out). |
+| `-pubcache-serve-feeds` | `VULOS_RELAY_PUBCACHE_SERVE_FEEDS` | `off` | Also proxy the **mutable** feed head/range reads. Never cached — a feed head is signature-authenticated, which this node cannot verify. |
+
 **Grants JSON:** each grant is a token, the names it may serve, and an optional
 `account_id` (link the token to a Vulos account for gating + metering; omit it to
 serve the token unbilled).
