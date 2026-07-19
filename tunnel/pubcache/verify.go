@@ -64,7 +64,8 @@ func Verify(kind Kind, want Addr, body []byte) error {
 		}
 		return nil
 	case KindManifest:
-		return verifyManifest(want, body)
+		_, err := verifiedManifestChunks(want, body)
+		return err
 	}
 	return fmt.Errorf("%w: unknown object kind", ErrMalformedObject)
 }
@@ -84,8 +85,15 @@ const (
 	manifestKeyExtensionFloor = 64
 )
 
-// verifyManifest checks a PubManifest against the address it was fetched by
-// (§ 22.2.1, § 22.2.3).
+// verifiedManifestChunks checks a PubManifest against the address it was
+// fetched by (§ 22.2.1, § 22.2.3) and, on success, returns its ordered
+// plaintext chunk list.
+//
+// It returns the chunk list because the § 5.3 proof endpoint needs exactly that
+// and needs it to have been PROVED first: a path is only meaningful over a chunk
+// list that has already been shown to root to the requested address. Returning
+// it from the verifier rather than re-parsing elsewhere makes it impossible to
+// build a proof over an unverified list.
 //
 // Three independent checks, all of which must pass:
 //  1. the key-5 trap — a manifest carrying a key field is a leaked sealed
@@ -95,10 +103,10 @@ const (
 //     which is 0x0903);
 //  3. the manifest's own `id` field agrees with that address, so a cache never
 //     stores an object that disagrees with itself.
-func verifyManifest(want Addr, body []byte) error {
+func verifiedManifestChunks(want Addr, body []byte) ([]Addr, error) {
 	entries, err := parseUintKeyedMap(body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var (
 		selfID    Addr
@@ -114,20 +122,20 @@ func verifyManifest(want Addr, body []byte) error {
 		case manifestKeyForbidden:
 			// § 22.2.1: reject on sight. The sealed manifest forbids key 5 lest
 			// it LEAK; the public manifest forbids it because none EXISTS.
-			return ErrManifestKeyPresent
+			return nil, ErrManifestKeyPresent
 		case manifestKeyID:
 			major, l, n, err := readHead(e.val)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			if major != cborMajorByteStr || l != addrLen || len(e.val) != n+addrLen {
-				return fmt.Errorf("%w: PubManifest.id is not a %d-byte address", ErrMalformedObject, addrLen)
+				return nil, fmt.Errorf("%w: PubManifest.id is not a %d-byte address", ErrMalformedObject, addrLen)
 			}
 			copy(selfID[:], e.val[n:])
 			haveID = true
 		case manifestKeyChunks:
 			if chunks, err = parseAddrArray(e.val); err != nil {
-				return err
+				return nil, err
 			}
 			haveChunk = true
 		case manifestKeySize:
@@ -138,18 +146,18 @@ func verifyManifest(want Addr, body []byte) error {
 			haveSuite = true
 		default:
 			if e.key < manifestKeyExtensionFloor {
-				return fmt.Errorf("%w: unknown PubManifest key %d", ErrMalformedObject, e.key)
+				return nil, fmt.Errorf("%w: unknown PubManifest key %d", ErrMalformedObject, e.key)
 			}
 		}
 	}
 	if !haveID || !haveChunk || !haveSize || !haveCsz || !haveSuite {
-		return fmt.Errorf("%w: PubManifest missing a required field", ErrMalformedObject)
+		return nil, fmt.Errorf("%w: PubManifest missing a required field", ErrMalformedObject)
 	}
 	if root := ManifestRoot(chunks); root != want {
-		return fmt.Errorf("%w: manifest chunk list roots to %s, requested as %s", ErrAddrMismatch, root, want)
+		return nil, fmt.Errorf("%w: manifest chunk list roots to %s, requested as %s", ErrAddrMismatch, root, want)
 	}
 	if selfID != want {
-		return fmt.Errorf("%w: PubManifest.id %s disagrees with fetch address %s", ErrAddrMismatch, selfID, want)
+		return nil, fmt.Errorf("%w: PubManifest.id %s disagrees with fetch address %s", ErrAddrMismatch, selfID, want)
 	}
-	return nil
+	return chunks, nil
 }

@@ -85,6 +85,15 @@ type Config struct {
 	// MaxFeedRange caps the span of a feed range request. 0 => 1024 entries.
 	MaxFeedRange uint64
 
+	// ServeProofs enables the OPTIONAL § 5.3 chunk-tree range-proof endpoint,
+	// `manifest/{id}/proof?chunk=i`. OFF by default, which is not timidity: the
+	// spec makes the endpoint advertised BY PRESENCE, so a 404 is the correct
+	// and complete way to say "not offered here" and a fetcher simply falls back
+	// to whole-manifest verification. Serving it costs a manifest fetch and an
+	// O(n) tree walk per proof, so it stays an operator's explicit choice like
+	// every other thing this role does.
+	ServeProofs bool
+
 	// HTTPClient overrides the upstream client (tests, custom transports).
 	// A nil client gets one that does NOT follow redirects.
 	HTTPClient *http.Client
@@ -253,6 +262,8 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.serveObject(w, r, KindManifest, parts[1], "application/cbor")
 	case len(parts) == 2 && parts[0] == "chunk":
 		s.serveObject(w, r, KindChunk, parts[1], "application/octet-stream")
+	case len(parts) == 3 && parts[0] == "manifest" && parts[2] == "proof":
+		s.serveChunkProof(w, r, parts[1])
 	case len(parts) == 3 && parts[0] == "feed" && (parts[2] == "head" || parts[2] == "range"):
 		s.serveFeed(w, r, parts[1], parts[2])
 	default:
@@ -332,6 +343,97 @@ func (s *Service) lookup(r *http.Request, kind Kind, key string, addr Addr) ([]b
 
 	s.store.put(key, body)
 	return body, true
+}
+
+// serveChunkProof implements the OPTIONAL § 5.3 endpoint:
+//
+//	GET {p}/manifest/{id}/proof?chunk=i  →  [i, [siblings…]]  (application/cbor)
+//
+// The manifest is resolved through the ordinary verified path, so a proof can
+// only ever be built over a chunk list this node has already proved roots to
+// {id}. That ordering is the whole safety argument: the node cannot serve a
+// path over a list it has not verified, so the only proofs it can emit are true
+// ones — and a client still verifies for itself, because a proof from a cache
+// is a convenience, never a trust root (§ 5.3).
+//
+// The response is immutable and content-addressed by (id, i), so it carries the
+// same long-lived Cache-Control as the other content-addressed reads and an
+// ETag naming both coordinates.
+func (s *Service) serveChunkProof(w http.ResponseWriter, r *http.Request, addrStr string) {
+	// Advertised by presence: an operator who has not enabled it serves the
+	// plain "not offered here" 404 and clients fall back (§ 5.3).
+	if !s.cfg.ServeProofs {
+		s.notServed(w)
+		return
+	}
+	addr, err := ParseAddr(addrStr)
+	if err != nil {
+		s.notServed(w)
+		return
+	}
+	idx, ok := parseChunkIndex(r.URL.Query())
+	if !ok {
+		s.notServed(w)
+		return
+	}
+
+	body, cached := s.lookup(r, KindManifest, cacheKey(KindManifest, addr), addr)
+	if !cached {
+		s.notServed(w)
+		return
+	}
+	// Re-derives the chunk list from bytes that already passed the gate; the
+	// error is unreachable for stored bytes but is handled rather than asserted.
+	chunks, err := verifiedManifestChunks(addr, body)
+	if err != nil {
+		s.notServed(w)
+		return
+	}
+	path, err := ChunkProof(chunks, idx)
+	if err != nil {
+		// Out of range for this manifest. It collapses to the same refusal as
+		// everything else: a holder's 404 is never a statement about what exists.
+		s.notServed(w)
+		return
+	}
+	proof := EncodeChunkProof(idx, path)
+
+	etag := `"` + addr.String() + "." + strconv.Itoa(idx) + `"`
+	h := w.Header()
+	h.Set("Content-Type", "application/cbor")
+	h.Set("ETag", etag)
+	h.Set("Cache-Control", "public, immutable, max-age="+strconv.Itoa(immutableMaxAge))
+	h.Set("X-Content-Type-Options", "nosniff")
+
+	if match := r.Header.Get("If-None-Match"); match != "" && etagMatches(match, etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	h.Set("Content-Length", strconv.Itoa(len(proof)))
+	w.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(proof)
+	}
+}
+
+// parseChunkIndex reads the `chunk=i` query parameter. It is strict — a missing,
+// negative, non-numeric, or non-canonical index is refused rather than coerced
+// to 0, so a client can never be handed a proof for a chunk it did not ask about.
+func parseChunkIndex(q url.Values) (int, bool) {
+	raw := q.Get("chunk")
+	if raw == "" {
+		return 0, false
+	}
+	v, err := strconv.ParseUint(raw, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	// Reject "007" and friends: the response is content-addressed by (id, i), so
+	// two spellings of one index must not become two cache entries downstream.
+	if strconv.FormatUint(v, 10) != raw {
+		return 0, false
+	}
+	return int(v), true
 }
 
 // serveFeed proxies the two MUTABLE feed endpoints without ever storing them.

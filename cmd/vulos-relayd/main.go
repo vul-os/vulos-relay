@@ -165,6 +165,7 @@ func main() {
 		pcUpstreamTO   = flag.Duration("pubcache-upstream-timeout", envDuration("VULOS_RELAY_PUBCACHE_UPSTREAM_TIMEOUT", 0), "timeout for one upstream read (0=default 15s)")
 		pcInflight     = flag.Int("pubcache-max-inflight", int(envInt64("VULOS_RELAY_PUBCACHE_MAX_INFLIGHT", 0)), "max concurrent upstream fetches across the role (0=default 16)")
 		pcServeFeeds   = flag.Bool("pubcache-serve-feeds", envOr("VULOS_RELAY_PUBCACHE_SERVE_FEEDS", "") == "1", "also proxy the MUTABLE feed head/range reads (never cached; a feed head is signature-authenticated, which this node cannot verify)")
+		pcServeProofs  = flag.Bool("pubcache-serve-proofs", envOr("VULOS_RELAY_PUBCACHE_SERVE_PROOFS", "") == "1", "also serve the OPTIONAL chunk-tree range proofs (FEEDS.md § 5.3: manifest/{id}/proof?chunk=i) for O(log n) verified partial fetch")
 	)
 	flag.Parse()
 
@@ -271,6 +272,7 @@ func main() {
 			UpstreamTimeout:     *pcUpstreamTO,
 			MaxUpstreamInflight: *pcInflight,
 			ServeFeeds:          *pcServeFeeds,
+			ServeProofs:         *pcServeProofs,
 		},
 
 		EnableRendezvous: *enableRDV,
@@ -315,6 +317,9 @@ func main() {
 			feeds = "content-addressed reads + mutable feed passthrough (never cached)"
 		}
 		log.Printf("vulos-relayd: PUBCACHE (DMTAP-PUB cache/pin) role ENABLED prefix=%s upstreams=%d %s", *pcPrefix, len(splitCSV(*pcUpstreams)), feeds)
+		if *pcServeProofs {
+			log.Printf("vulos-relayd: pubcache CHUNK-TREE RANGE PROOFS ENABLED (FEEDS.md § 5.3, optional) — manifest/{id}/proof?chunk=i serves an O(log n) audit path for verified seek/resume; clients still verify locally")
+		}
 		log.Printf("vulos-relayd: NOTE this role serves PUBLIC PLAINTEXT you can read (dmtap § 22.6.1) — unlike the tunnel/mailbox/rendezvous roles it is NOT content-blind; every object is verified against its content address before it is cached or served")
 	}
 	if *trustProxy {
