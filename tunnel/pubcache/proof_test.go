@@ -692,6 +692,12 @@ func TestChunkProofInteropVector(t *testing.T) {
 // endpoint should reproduce them exactly; if it reproduces the root but not the
 // paths, its tree shape differs, and if it reproduces neither, its DS tag or
 // leaf rule differs (see the vidmesh parity note in docs/PUBCACHE.md).
+//
+// CROSS-LANGUAGE INTEROP LOCK: the JS reference verifier asserts these SAME
+// constants in client/src/__tests__/chunkProof.test.js, so a one-byte
+// divergence between the Go node and the browser fails one side. If you ever
+// intentionally change the tree or the proof encoding, regenerate BOTH copies
+// together.
 const interopRootB64 = "HqmS4uJD2JJOZjmeF-YZikRhImZOgGvZHe6IwCOpRyT_"
 
 var interopProofHex = map[int]string{

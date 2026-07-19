@@ -76,6 +76,13 @@
       "require": "./dist-lib/rendezvousSignaling.cjs",
       "default": "./dist-lib/rendezvousSignaling.js"
     },
+    "./chunkProof": {
+      "source": "./src/chunkProof.js",
+      "types": "./dist-lib/chunkProof.d.ts",
+      "import": "./dist-lib/chunkProof.js",
+      "require": "./dist-lib/chunkProof.cjs",
+      "default": "./dist-lib/chunkProof.js"
+    },
     "./presence": {
       "source": "./src/presence.js",
       "types": "./dist-lib/presence.d.ts",

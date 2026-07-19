@@ -67,6 +67,42 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
     matches vidmesh's odd-node **promotion** rule in shape and § 3.2's DS-tagged
     hashes in value; the two are asserted equal to the § 3.2 RFC 6962 split rule
     for every `n` up to 300, and a 5-chunk interop vector is pinned byte-for-byte.
+  - **BROWSER VERIFIER — `@vulos/relay-client/chunkProof` (new subpath).** The
+    Go verifier only removed trust from the gateway for *server-to-server*
+    readers; the clients that most need partial fetch run in a **browser**, and
+    without a verifier there they still had to take the gateway's word for the
+    bytes — the exact trust this design exists to remove. The JS module
+    reimplements § 3.2 term for term (DS-tagged leaves over the chunk **address**,
+    bare 32-byte interior nodes, bottom-up path, odd-node promotion contributing
+    no element) plus the strict CBOR decoder, so a **video player seeking** into a
+    large object or a **download resuming** mid-file can prove chunk *i* belongs
+    to the root from the signed announce, with no chunk list and no trust in the
+    holder. API: `verifyChunkResponse` (one call, and it cross-checks the proof's
+    own index against the one requested — a valid proof of the *wrong* chunk is
+    still a failure), `decodeChunkProof`, `verifyChunkProof`, `isChunkProofValid`,
+    `chunkProof`, `encodeChunkProof`, `manifestRoot`, `hashBytes`. Its own subpath
+    so apps that never verify a chunk do not pull in BLAKE3; the hash is
+    `@noble/hashes` (audited, already a dependency of the rendezvous client).
+  - **CROSS-LANGUAGE INTEROP LOCK.** The JS suite asserts the *same* 5-chunk
+    vector — root and every proof body, byte for byte — that `proof_test.go`
+    pins, so a one-byte divergence between the Go node and the browser fails one
+    of the two suites (the arrangement the rendezvous canonical message already
+    uses). Three **BLAKE3 known-answer vectors** are asserted in both languages
+    underneath it, so a dependency bump that changed the primitive reports itself
+    as a hash mismatch rather than an inscrutable Merkle bug. JS adversarial
+    coverage: wrong index, tampered chunk, **each path element corrupted
+    independently**, reordered/truncated/over-long paths, wrong root, wrong
+    widths, and a decoder fuzz set (trailing bytes, truncation at every length,
+    non-minimal integers, indefinite lengths, wrong-width elements, over-long
+    declared paths).
+  - **Documented honestly:** `nChunks` is **structural metadata, not a second
+    authenticator**. It fixes the tree width so the verifier knows where
+    promotion skips an element, and several widths imply the same fold — for
+    chunk 0 of the interop vector, `n = 5, 6, 7, 8` all verify. Not a forgery
+    vector (the fold must still reproduce the **trusted root**), but it is why
+    `nChunks` must come from the trusted manifest header and never from the
+    response carrying the proof. Both suites now assert those exact widths, so
+    the limitation is a tested fact rather than a caveat in prose.
 
 ### Added — the open rendezvous role (announce/resolve/signal/mailbox + ICE)
 

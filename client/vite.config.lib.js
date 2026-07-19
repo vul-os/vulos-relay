@@ -24,6 +24,7 @@ const entries = {
   fabric:            resolve(dir, 'src/fabric.js'),
   rendezvous:        resolve(dir, 'src/rendezvous.js'),
   rendezvousSignaling: resolve(dir, 'src/rendezvousSignaling.js'),
+  chunkProof:        resolve(dir, 'src/chunkProof.js'),
   presence:          resolve(dir, 'src/presence.js'),
   call:              resolve(dir, 'src/call/index.js'),
   useLiveCursors:    resolve(dir, 'src/useLiveCursors.js'),

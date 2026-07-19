@@ -221,6 +221,61 @@ fields, not the chunk list, so the O(log n) saving stands. Note that `nChunks` i
 same fold shape for a given index accept the same proof, and correctly so — the
 **root** is what authenticates.
 
+### Verifying in the browser
+
+Server-side verification alone leaves the feature half-built. If only a Go node
+can check a path, then a **web** client — the one that most needs partial fetch —
+still has to trust whichever gateway handed it the bytes, which is the exact
+trust the content-addressed design exists to remove. So the JS client ships the
+same verifier:
+
+```js
+import {
+  verifyChunkResponse, decodeChunkProof, verifyChunkProof, hashBytes, manifestRoot,
+} from '@vulos/relay-client/chunkProof'
+
+// The one-call path: bytes and proof body exactly as served, root and nChunks
+// from what you already trust.
+const bytes = verifyChunkResponse({
+  root,          // 33-byte address or base64url, from the SIGNED announce
+  nChunks,       // ⌈size ÷ chunk_sz⌉, from the trusted manifest header
+  index: i,      // the chunk you asked for
+  chunk,         // Uint8Array as served
+  proof,         // § 5.3 CBOR body as served
+})               // → returns the chunk, or throws ChunkProofError
+```
+
+It is exported as its **own subpath** (like `./rendezvous`), so an app that never
+verifies a chunk does not pull in BLAKE3. `decodeChunkProof` / `verifyChunkProof`
+are available separately for callers that already have the path in hand, and
+`isChunkProofValid` is the boolean form. BLAKE3 comes from
+[`@noble/hashes`](https://github.com/paulmillr/noble-hashes) — audited, and
+already a dependency of the rendezvous client.
+
+`verifyChunkResponse` also cross-checks the index **inside** the proof against
+the one you requested. A gateway answering a seek for chunk 3 with a perfectly
+valid proof of chunk 1 would otherwise pass every hash check and hand a player
+the wrong bytes at the wrong offset.
+
+**The browser use case, concretely.** A player seeking to 00:47:12 of a
+multi-gigabyte video maps the offset to chunk *i*, fetches `/chunk/{h_i}` and
+`/chunk-proof/{id}/{i}`, and proves *i* belongs to the root it got from the
+signed announce — without downloading a chunk list with thousands of entries, and
+without trusting the holder. A download resuming at 60 % verifies each new chunk
+as it lands, so a holder that swaps bytes mid-transfer is caught at that chunk
+rather than at the end of the file. In both cases the client can rotate to
+another holder on failure, which is the whole asymmetry the role rests on: a
+holder can fail to serve, but it cannot lie.
+
+The same honesty applies here as above: **`nChunks` is structural metadata, not a
+second authenticator.** It comes from the manifest header, it tells the verifier
+where odd-node promotion happens, and several counts can imply the same fold for
+a given index — for chunk 0 of the interop vector, `n = 5, 6, 7, 8` all verify.
+That is not a forgery vector, because the fold must still reproduce the **trusted
+root**; it is the reason `nChunks` must come from the trusted header and never
+from the response that carried the proof. Both test suites assert those exact
+widths, so this is a tested property rather than a caveat in prose.
+
 ### Tree shape, and parity with vidmesh
 
 § 3.2 specifies the tree by the **RFC 6962 split rule** (recurse on the largest
@@ -244,6 +299,18 @@ wire-interchangeable, and § 5.3 never claims they are.
 `proof_test.go` pins a 5-chunk interop vector — root and every path, byte for
 byte — for anyone implementing the endpoint elsewhere. Five leaves is the
 smallest tree that promotes an odd node at two levels.
+
+That vector is also the **cross-language interop lock**. The JS verifier asserts
+the *same* constants in `client/src/__tests__/chunkProof.test.js`, so a one-byte
+divergence between the Go node and the browser — a different DS tag, a leaf taken
+over chunk bytes instead of the chunk address, an interior node that picked up a
+multihash prefix, a top-down path, a promotion that re-hashes — fails one of the
+two suites. Underneath it, three BLAKE3 known-answer vectors are asserted in both
+languages, so a dependency bump that changed the primitive reports itself as a
+hash mismatch instead of an inscrutable Merkle bug. This is the same arrangement
+the rendezvous role uses for its canonical signing message (`canonical_test.go` ↔
+`rendezvous.test.js`). **If you change the construction, regenerate both copies
+together.**
 
 ---
 
