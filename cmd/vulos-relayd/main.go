@@ -226,14 +226,31 @@ func main() {
 		log.Printf("vulos-relayd: token store = CP install credentials")
 	} else {
 		grants, err := loadGrants(*tokensFile)
-		if err != nil {
+		switch {
+		case err == nil:
+		case errors.Is(err, errNoGrants) && rolesWithoutTunnel(*enableRDV, *enablePubCache):
+			// ROLE-ONLY MODE. A node serving ONLY the rendezvous (and/or pubcache)
+			// role has no reverse tunnels to authorize, so demanding agent grants
+			// was a startup gate with nothing behind it — operators worked around
+			// it by inventing a dummy token that authorized a box that did not
+			// exist, which is strictly worse than no grant at all.
+			//
+			// Fail-closed is preserved, not relaxed: we proceed with an EMPTY grant
+			// set, so the tunnel surface authorizes NOBODY. Any agent that connects
+			// is rejected. This is "no tunnels", never "open tunnels".
+			log.Printf("vulos-relayd: no agent grants — running ROLE-ONLY (%s); the reverse-tunnel surface authorizes nobody",
+				enabledRoleNames(*enableRDV, *enablePubCache))
+			store = server.NewDenyAllTokenStore()
+		default:
 			log.Fatalf("vulos-relayd: %v", err)
 		}
-		st, err := server.NewStaticTokenStoreWithRevoked(grants, revoked)
-		if err != nil {
-			log.Fatalf("vulos-relayd: token store: %v", err)
+		if store == nil {
+			st, err := server.NewStaticTokenStoreWithRevoked(grants, revoked)
+			if err != nil {
+				log.Fatalf("vulos-relayd: token store: %v", err)
+			}
+			store = st
 		}
-		store = st
 	}
 
 	srv, err := server.New(server.Config{
@@ -431,6 +448,31 @@ func sanitizePoP(domain string) string {
 	return d
 }
 
+// errNoGrants is returned by loadGrants when no grant source is configured at
+// all. It is a hard failure for a reverse-tunnel relay (refusing to run open) but
+// a legitimate configuration for a node that serves only the rendezvous and/or
+// pubcache roles — see the ROLE-ONLY branch at the token-store setup.
+var errNoGrants = errors.New("no grants: set -tokens-file or VULOS_RELAY_TOKENS (refusing to run open)")
+
+// rolesWithoutTunnel reports whether at least one non-tunnel role is enabled, i.e.
+// whether this process still has a job to do with an empty grant set.
+func rolesWithoutTunnel(rendezvous, pubcache bool) bool { return rendezvous || pubcache }
+
+// enabledRoleNames renders the enabled non-tunnel roles for the startup log.
+func enabledRoleNames(rendezvous, pubcache bool) string {
+	var roles []string
+	if rendezvous {
+		roles = append(roles, "rendezvous")
+	}
+	if pubcache {
+		roles = append(roles, "pubcache")
+	}
+	if len(roles) == 0 {
+		return "none"
+	}
+	return strings.Join(roles, "+")
+}
+
 // loadGrants reads grants from -tokens-file, else VULOS_RELAY_TOKENS env.
 func loadGrants(path string) ([]server.Grant, error) {
 	var data []byte
@@ -444,7 +486,7 @@ func loadGrants(path string) ([]server.Grant, error) {
 	case os.Getenv("VULOS_RELAY_TOKENS") != "":
 		data = []byte(os.Getenv("VULOS_RELAY_TOKENS"))
 	default:
-		return nil, fmt.Errorf("no grants: set -tokens-file or VULOS_RELAY_TOKENS (refusing to run open)")
+		return nil, errNoGrants
 	}
 	var grants []server.Grant
 	if err := json.Unmarshal(data, &grants); err != nil {

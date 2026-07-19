@@ -109,6 +109,29 @@ func NewStaticTokenStore(grants []Grant) (TokenStore, error) {
 	return NewStaticTokenStoreWithRevoked(grants, RevokedSpec{})
 }
 
+// NewDenyAllTokenStore returns a TokenStore that authorizes NOBODY.
+//
+// This is for a node that serves only the non-tunnel roles — rendezvous and/or
+// pubcache — and therefore has no reverse tunnels to authorize. Such a node used
+// to be unable to start at all: the static store refuses an empty grant set
+// ("refusing to run open"), so operators invented a dummy token authorizing a box
+// that did not exist. That is strictly worse than no grant — it is a live
+// credential for a name nobody owns.
+//
+// This is the opposite of running open, and the distinction is the whole point:
+// the empty-grant guard on the static store exists because an EMPTY MAP THERE
+// would be an accident (a grants file that failed to parse into anything, a typo'd
+// env var) on a relay whose job is tunnels. Here, authorizing nobody is the
+// DELIBERATE, explicitly-named configuration. Every Authorize call fails closed.
+func NewDenyAllTokenStore() TokenStore { return denyAllTokenStore{} }
+
+// denyAllTokenStore implements TokenStore by refusing everything.
+type denyAllTokenStore struct{}
+
+func (denyAllTokenStore) Authorize(token, name string) (string, error) {
+	return "", fmt.Errorf("relay: no agent grants configured (role-only node: the reverse-tunnel surface authorizes nobody)")
+}
+
 // NewStaticTokenStoreWithRevoked is NewStaticTokenStore plus a static revoked-list
 // (WAVE41-RELAY-REVOCATION). A revoked token/name/account is refused at connect
 // and dropped mid-session by the revocation sweep.

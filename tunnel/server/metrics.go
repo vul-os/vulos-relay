@@ -177,8 +177,48 @@ type metrics struct {
 	cuts        map[cutReason]*counter        // live-tunnel cuts by reason
 	bytes       map[byteDirection]*counter    // bytes proxied by direction
 
+	// RENDEZVOUS ROLE: the rendezvous service keeps its own counters (it is a
+	// standalone, mountable handler that must work without the tunnel server), so
+	// rather than double-counting from the request path we snapshot them at scrape
+	// time — the same shape as setActiveAgents reading the registry.
+	//
+	// nil pointer == the rendezvous role is not enabled on this node, in which
+	// case NO rendezvous series are emitted at all. That is deliberate: a scraper
+	// can tell "role off" from "role on, zero traffic", and a tunnel-only relay's
+	// exposition is unchanged.
+	rdv atomic.Pointer[rendezvousSnapshot]
+
 	// readiness (set once background loops are up).
 	ready atomic.Bool
+}
+
+// rendezvousSnapshot is a scrape-time copy of the rendezvous service's counters.
+// It is a local struct rather than the rendezvous package's Stats so metrics.go
+// stays independent of that package's evolution; server.go does the translation.
+//
+// Cardinality: these are all plain unlabelled counters/gauges. No key, endpoint,
+// origin, or IP is ever recorded — the rendezvous service is content-blind and its
+// metrics must not become the place its soft-state leaks.
+type rendezvousSnapshot struct {
+	announces       uint64
+	announceRejects uint64
+	resolves        uint64
+	signalDeposits  uint64
+	signalPickups   uint64
+	mailboxDeposits uint64
+	mailboxPickups  uint64
+	authFailures    uint64
+	rateLimited     uint64
+	livePresence    int64
+}
+
+// setRendezvous publishes a scrape-time rendezvous snapshot. Called from
+// handleMetrics when the role is enabled.
+func (m *metrics) setRendezvous(s rendezvousSnapshot) {
+	if m == nil {
+		return
+	}
+	m.rdv.Store(&s)
 }
 
 func newMetrics() *metrics {
@@ -417,6 +457,25 @@ func (m *metrics) writeTo(w io.Writer) {
 	writeLabelledLimit(w, "rate_limited_total", "429 rate-limit rejections by surface.", m.rateLimited)
 	writeLabelledCut(w, "tunnel_cuts_total", "Live tunnels cut, by reason.", m.cuts)
 	writeLabelledBytes(w, "proxied_bytes_total", "Bytes proxied by direction.", m.bytes)
+
+	// RENDEZVOUS ROLE — emitted only when the role is enabled (see the rdv field).
+	// Until this existed the tunnel was the only instrumented role, so an operator
+	// running a rendezvous node had no relay-side ground truth at all: no way to
+	// tell announces from resolves, a dead signalling path from an idle one, or a
+	// rate-limit wall from a client bug.
+	if r := m.rdv.Load(); r != nil {
+		writeGauge(w, "rendezvous_live_presence", "Presence entries currently live (not yet expired) in the rendezvous directory.", nonNeg(r.livePresence))
+
+		writeCounter(w, "rendezvous_announces_total", "Accepted signed presence announces.", r.announces)
+		writeCounter(w, "rendezvous_announce_rejects_total", "Presence announces refused (bad signature, stale timestamp, replayed nonce, or caps).", r.announceRejects)
+		writeCounter(w, "rendezvous_resolves_total", "Presence resolve reads served.", r.resolves)
+		writeCounter(w, "rendezvous_signal_deposits_total", "WebRTC signalling blobs deposited by senders.", r.signalDeposits)
+		writeCounter(w, "rendezvous_signal_pickups_total", "WebRTC signalling blobs picked up by recipients.", r.signalPickups)
+		writeCounter(w, "rendezvous_mailbox_deposits_total", "Encrypted relay-circuit blobs deposited by senders.", r.mailboxDeposits)
+		writeCounter(w, "rendezvous_mailbox_pickups_total", "Encrypted relay-circuit blobs picked up by recipients.", r.mailboxPickups)
+		writeCounter(w, "rendezvous_auth_failures_total", "Rendezvous writes refused for a failed signature/freshness/replay check.", r.authFailures)
+		writeCounter(w, "rendezvous_rate_limited_total", "Rendezvous requests refused by a per-key or global rate limiter.", r.rateLimited)
+	}
 }
 
 func writeGauge(w io.Writer, name, help string, v int64) {

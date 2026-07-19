@@ -166,6 +166,24 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	// Reconcile the agent gauge with the registry's authoritative count before the
 	// scrape, so a missed dec on an abnormal teardown self-heals.
 	s.metrics.setActiveAgents(s.registry.count())
+	// RENDEZVOUS ROLE: the rendezvous service owns its counters (it is mountable
+	// standalone), so pull a snapshot at scrape time. Skipped entirely when the
+	// role is off, which is what keeps those series absent on a tunnel-only relay.
+	if s.rendezvous != nil {
+		st := s.rendezvous.Stats()
+		s.metrics.setRendezvous(rendezvousSnapshot{
+			announces:       st.Announces,
+			announceRejects: st.AnnounceRejects,
+			resolves:        st.Resolves,
+			signalDeposits:  st.SignalDeposits,
+			signalPickups:   st.SignalPickups,
+			mailboxDeposits: st.MailboxDeposits,
+			mailboxPickups:  st.MailboxPickups,
+			authFailures:    st.AuthFailures,
+			rateLimited:     st.RateLimited,
+			livePresence:    int64(st.LivePresence),
+		})
+	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	s.metrics.writeTo(w)
 }
