@@ -297,6 +297,21 @@ The CP→relay **graceful-drain** control endpoints (`/control/drain`,
 `/control/undrain`, `/control/status`) live on the **admin surface** and are gated by
 `X-Relay-Auth: CP_SHARED_SECRET` — they are **disabled on a relay with no CP secret**.
 
+**Rendezvous role** (open announce/resolve/signal/mailbox + ICE — see
+[RENDEZVOUS.md](RENDEZVOUS.md)). CP-optional / self-hostable; off by default; served
+on the relay's apex host.
+
+| Flag | Env | Default | Meaning |
+|---|---|---|---|
+| `-rendezvous` | `VULOS_RELAY_RENDEZVOUS` | `off` | Enable the rendezvous role. |
+| `-rendezvous-prefix` | `VULOS_RELAY_RENDEZVOUS_PREFIX` | `/rendezvous` | Mount prefix for the role's routes. |
+| `-rendezvous-no-public-resolve` | `VULOS_RELAY_RENDEZVOUS_NO_RESOLVE` | `off` | Disable unauthenticated presence resolve reads (directory becomes signal/mailbox-only). |
+| `-rendezvous-stun` | `VULOS_RELAY_STUN` | — | Comma-separated STUN URLs advertised via `/rendezvous/ice` (empty ⇒ public default list). |
+| `-rendezvous-disable-public-stun` | `VULOS_RELAY_DISABLE_PUBLIC_STUN` | `off` | Drop the built-in public STUN fallback (sovereign deployments). |
+| `-rendezvous-turn` | `VULOS_RELAY_TURN` | — | Comma-separated TURN URLs (needs `-rendezvous-turn-secret` to emit ephemeral creds). |
+| `-rendezvous-turn-secret` | `VULOS_RELAY_TURN_SECRET` | — | coturn static-auth-secret used to mint short-lived TURN credentials; **never sent to clients**. |
+| `-rendezvous-turn-ttl` | `VULOS_RELAY_TURN_TTL` | `0` (⇒ 12h) | Lifetime of a minted TURN credential. |
+
 **Grants JSON:** each grant is a token, the names it may serve, and an optional
 `account_id` (link the token to a Vulos account for gating + metering; omit it to
 serve the token unbilled).

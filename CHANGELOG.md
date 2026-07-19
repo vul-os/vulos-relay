@@ -9,6 +9,43 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added — the open rendezvous role (announce/resolve/signal/mailbox + ICE)
+
+- **`vulos-relayd` now serves the open key-addressed reachability role** (new
+  `tunnel/rendezvous` package), enabled with `-rendezvous`. Apps get **peer
+  discovery** and **content-opaque WebRTC signaling** (plus a short-TTL mailbox)
+  from **any** conforming relay — self-hosted or Vulos-run — with **no Vulos OS and
+  no host-box `/api/peering/*` backend required**. `vulos-relayd` is the reference
+  implementation; the wire protocol is documented in **`docs/RENDEZVOUS.md`** for
+  anyone to implement.
+  - **ANNOUNCE / RESOLVE**: Ed25519-signed, TTL'd, replay-protected presence upsert
+    (base64url key addressing); unauthenticated public presence read.
+  - **SIGNAL**: sender-signed deposit + recipient-signed long-poll pickup/ack of
+    opaque WebRTC offer/answer/ICE blobs (short TTL).
+  - **MAILBOX**: same shape, longer TTL (default 48h cap), for offline delivery —
+    size caps, per-key blob+byte quotas, at-rest opaque (DMTAP §14.3-shaped;
+    generalizes the relay-circuit deposit/pickup fallback).
+  - **ICE**: STUN + ephemeral coturn-REST TURN credentials (the TURN secret never
+    leaves the node).
+  - **Fail-closed & content-blind**: every write is Ed25519-signed over a
+    domain-separated, length-prefixed canonical message with timestamp-freshness +
+    nonce replay guard; per-key + global token-bucket rate limits; bounded bodies;
+    no secrets in logs. The node never inspects payloads and never dials announced
+    endpoints (no SSRF surface). **CP-optional / fully self-hostable** — soft-state
+    only, no Vulos Cloud needed.
+  - Mounted **only on the relay's apex host**, so a tunnel subdomain's own
+    `/rendezvous/*` paths are never shadowed. Flags: `-rendezvous`,
+    `-rendezvous-prefix`, `-rendezvous-no-public-resolve`, `-rendezvous-stun`,
+    `-rendezvous-turn`, `-rendezvous-turn-secret`, `-rendezvous-turn-ttl`,
+    `-rendezvous-disable-public-stun`.
+- **`@vulos/relay-client`**: new `RendezvousClient` + `RendezvousIdentity`
+  (`@vulos/relay-client/rendezvous`) — the reference JS client for the protocol,
+  Ed25519-signing over the identical canonical message the Go node verifies
+  (locked by a cross-language test vector). `FabricClient` gains opt-in
+  `rendezvousBaseUrl` / `rendezvousIdentity` / `rendezvousPrefix` options that point
+  it at any relayd's rendezvous surface (deriving ICE, exposing `.rendezvous`); the
+  existing `/api/peering/*` path is unchanged when the option is absent.
+
 ### Security — audit follow-ups (relay hardening + honest confidentiality docs)
 
 - **Slow-body DoS guard (MEDIUM-2).** The public listener now bounds request-body

@@ -55,6 +55,28 @@ deliverables**:
 
 ---
 
+## Part of VulOS
+
+<sub><img src="logo.png" height="14" alt="VulOS"> Part of <strong><a href="https://vulos.org">VulOS</a></strong> — the open, self-hostable web OS &amp; app suite. Runs standalone, or as an app hosted by the Vulos OS.</sub>
+
+**Vulos = free, open-source software + two paid services.** The Vulos OS, all its
+apps, and the app store are OSS and free — you self-host them. Vulos bills for **only
+two things**: **Vulos Relay** (reachability — this repo) and **backup storage**
+(buckets). There is no compute/box billing, no mail billing, and no app-store
+subscription.
+
+Vulos Relay is one of those **two paid services** — but the paid part is only the
+**managed, multi-region, autoscaled PoP pool**. The **software and the protocols are
+fully open and self-hostable**: `vulos-relayd` is MIT, runs with **no Vulos account
+and no Vulos Cloud** (CP-optional), and the **rendezvous role** it serves
+(announce/resolve/signal/mailbox — see **[docs/RENDEZVOUS.md](docs/RENDEZVOUS.md)**)
+is an **open protocol anyone can implement**. `vulos-relayd` is the *reference*
+implementation of that role; any conforming node interoperates. Apps take a hard
+runtime dependency on no relay — reachability/discovery is a feature that lights up
+when a relay (yours or Vulos-run) is present.
+
+---
+
 ## Deployment modes
 
 Relay is connectivity **infrastructure**, so its deployment shape is about *who
@@ -119,9 +141,19 @@ vs Path B (Vulos-hosted) — are in [GETTING-STARTED.md](docs/GETTING-STARTED.md
   pointer-event throttling and token-aware peer colours.
 - **P2P mesh calls** — `createCall` for audio/video mesh sessions (the LiveKit
   SFU path was removed before 1.0; the product uses the P2P mesh exclusively).
+- **Open rendezvous role** — `vulos-relayd` can serve the key-addressed
+  **announce / resolve / signal / mailbox + ICE** substrate (enable with
+  `-rendezvous`), so apps get **peer discovery** and **content-opaque WebRTC
+  signaling** from **any** conforming relay — self-hosted or Vulos-run — with **no
+  Vulos OS and no host-box `/api/peering/*` backend required**. Every write is
+  **Ed25519-signed** (fail-closed, replay-protected); the node is **content-blind**
+  (opaque blobs keyed by public key, never dialed) and **CP-optional / fully
+  self-hostable**. The `@vulos/relay-client` SDK ships the reference client
+  (`RendezvousClient`), and `FabricClient` takes a `rendezvousBaseUrl` option to use
+  any relayd's rendezvous surface. Protocol: **[docs/RENDEZVOUS.md](docs/RENDEZVOUS.md)**.
 - **Tree-shakeable subpaths** — import only what you need
-  (`@vulos/relay-client/endpoints`, `/fabric`, `/presence`, …); the `xlsx`-using
-  `roundTripCheck` is deliberately kept out of the root barrel.
+  (`@vulos/relay-client/endpoints`, `/fabric`, `/presence`, `/rendezvous`, …); the
+  `xlsx`-using `roundTripCheck` is deliberately kept out of the root barrel.
 - **Dual build** — ESM (`.js`) + CJS (`.cjs`) bundles with generated `.d.ts`
   types; `react` and `xlsx` are optional peer dependencies.
 
@@ -482,6 +514,7 @@ go vet ./...
 | [docs/METERING-BILLING.md](docs/METERING-BILLING.md) | How transfer is metered, account tiers/quotas, over-quota behavior (opt-in; unbilled self-host by default) |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Symptom → cause → fix field guide, keyed to literal relay/agent error strings |
 | [docs/TUNNEL.md](docs/TUNNEL.md) | Full server flag/env reference & deploy notes for the Go reverse tunnel (server + agent) |
+| [docs/RENDEZVOUS.md](docs/RENDEZVOUS.md) | The open key-addressed reachability role — announce/resolve/signal/mailbox + ICE wire protocol, auth, and canonical signing (implementable by anyone) |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Fabric / signaling / endpoint-failover design |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | All SDK options and constructor params |
 | [docs/SCREENSHOTS.md](docs/SCREENSHOTS.md) | Demo harness + screenshot regeneration |
