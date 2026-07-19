@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/vul-os/vulos-relay/tunnel/autoscale"
+	"github.com/vul-os/vulos-relay/tunnel/pubcache"
 	"github.com/vul-os/vulos-relay/tunnel/rendezvous"
 )
 
@@ -255,6 +256,21 @@ type Config struct {
 	// limits). Ignored unless EnableRendezvous is true.
 	Rendezvous rendezvous.Config
 
+	// CACHE/PIN ROLE (DMTAP-PUB public objects, dmtap substrate/ROLES.md § 6).
+	// When EnablePubCache is set, the relay ALSO serves the § 22.5.1 well-known
+	// read surface (tunnel/pubcache) on its OWN apex host, as a verifying
+	// read-through cache in front of operator-configured upstream gateways.
+	//
+	// UNLIKE every other role this relay serves, THIS ONE IS NOT CONTENT-BLIND:
+	// public objects are plaintext the operator can read, which shifts the
+	// operator's moderation and liability posture, so § 22.6.1 makes it explicit
+	// opt-in and this flag defaults OFF. Nothing is ever stored unverified — see
+	// tunnel/pubcache — so the cache can only fail to serve, never forge.
+	EnablePubCache bool
+	// PubCache configures the cache/pin service (upstreams, size caps, TTL, rate
+	// limits). Ignored unless EnablePubCache is true.
+	PubCache pubcache.Config
+
 	// RevokeSweepPeriod is how often the server rechecks every LIVE session against
 	// the revocation sources (static revoked-list + CP revoked/404 via the
 	// entitlement poll) and drops any that are now definitively revoked. This
@@ -404,6 +420,10 @@ type Server struct {
 	// is a plain reverse-tunnel relay).
 	rendezvous *rendezvous.Service
 
+	// CACHE/PIN ROLE: the DMTAP-PUB public-object read cache, served on the
+	// relay's apex host. nil unless EnablePubCache is set.
+	pubcache *pubcache.Service
+
 	// Observability (WAVE50-RELAY-OBSERVABILITY). metrics is always non-nil; log is
 	// the structured logger. adminSrv is the running admin/metrics *http.Server (nil
 	// until ServeAdmin runs) so Close can shut it down.
@@ -509,6 +529,26 @@ func New(cfg Config) (*Server, error) {
 		s.rendezvous = rendezvous.New(rcfg)
 		s.logInfo("rendezvous role enabled", logFields{Reason: s.rendezvous.Prefix()})
 	}
+	// CACHE/PIN ROLE: construct the DMTAP-PUB public-object cache when enabled.
+	// It inherits the relay's logger and its trusted-proxy-aware client-IP
+	// extractor (so its anonymous-read rate limits key on the same identity the
+	// rest of the relay uses). Mounted in Handler() and dispatched on the apex
+	// host in handlePublic, exactly like the rendezvous role.
+	if cfg.EnablePubCache {
+		pcfg := cfg.PubCache
+		if pcfg.Logger == nil {
+			pcfg.Logger = s.log
+		}
+		if pcfg.ClientIP == nil {
+			pcfg.ClientIP = s.clientIP
+		}
+		pc, err := pubcache.New(pcfg)
+		if err != nil {
+			return nil, err
+		}
+		s.pubcache = pc
+		s.logInfo("pubcache (DMTAP-PUB cache/pin) role enabled", logFields{Reason: pc.Prefix()})
+	}
 	// WAVE50-RELAY-OBSERVABILITY: background loops are up ⇒ mark ready for /readyz.
 	s.metrics.setReady(true)
 	return s, nil
@@ -526,6 +566,9 @@ func (s *Server) Close() {
 	s.stopPoPHeartbeat()
 	if s.rendezvous != nil {
 		s.rendezvous.Close()
+	}
+	if s.pubcache != nil {
+		s.pubcache.Close()
 	}
 	if s.meter != nil {
 		s.meter.stopAndFlush()

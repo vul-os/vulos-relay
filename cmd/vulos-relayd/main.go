@@ -42,6 +42,7 @@ import (
 	"time"
 
 	"github.com/vul-os/vulos-relay/tunnel/autoscale"
+	"github.com/vul-os/vulos-relay/tunnel/pubcache"
 	"github.com/vul-os/vulos-relay/tunnel/rendezvous"
 	"github.com/vul-os/vulos-relay/tunnel/server"
 )
@@ -147,6 +148,23 @@ func main() {
 		rdvTurn       = flag.String("rendezvous-turn", envOr("VULOS_RELAY_TURN", ""), "comma-separated TURN URLs (requires -rendezvous-turn-secret to emit ephemeral creds)")
 		rdvTurnSecret = flag.String("rendezvous-turn-secret", envOr("VULOS_RELAY_TURN_SECRET", ""), "coturn static-auth-secret used to mint short-lived TURN credentials (never sent to clients)")
 		rdvTurnTTL    = flag.Duration("rendezvous-turn-ttl", envDuration("VULOS_RELAY_TURN_TTL", 0), "lifetime of a minted TURN credential (0=default 12h)")
+
+		// CACHE/PIN ROLE: the DMTAP-PUB public-object read cache (dmtap § 22.5.1,
+		// substrate/ROLES.md § 6). Served on the relay's apex host under
+		// -pubcache-prefix. OFF by default, and deliberately so: unlike the tunnel,
+		// mailbox, and rendezvous roles, this one serves PLAINTEXT THE OPERATOR CAN
+		// READ, which shifts the operator's moderation and liability posture
+		// (§ 22.6.1). Nothing is ever stored unverified, so the cache can only fail
+		// to serve, never forge.
+		enablePubCache = flag.Bool("pubcache", envOr("VULOS_RELAY_PUBCACHE", "") == "1", "enable the DMTAP-PUB public-object cache/pin role (or VULOS_RELAY_PUBCACHE=1) — serves PLAINTEXT, explicit operator opt-in")
+		pcPrefix       = flag.String("pubcache-prefix", envOr("VULOS_RELAY_PUBCACHE_PREFIX", "/.well-known/dmtap-pub"), "mount prefix for the cache/pin role")
+		pcUpstreams    = flag.String("pubcache-upstreams", envOr("VULOS_RELAY_PUBCACHE_UPSTREAMS", ""), "comma-separated § 22.5.1 gateway base URLs to read through, tried in order (the ONLY hosts this role will contact)")
+		pcMaxObject    = flag.Int64("pubcache-max-object-bytes", envInt64("VULOS_RELAY_PUBCACHE_MAX_OBJECT", 0), "per-object size cap (0=default 16 MiB)")
+		pcMaxCache     = flag.Int64("pubcache-max-bytes", envInt64("VULOS_RELAY_PUBCACHE_MAX_BYTES", 0), "total cache size cap, LRU-evicted (0=default 256 MiB)")
+		pcTTL          = flag.Duration("pubcache-ttl", envDuration("VULOS_RELAY_PUBCACHE_TTL", 0), "per-object cache lifetime (0=default 1h)")
+		pcUpstreamTO   = flag.Duration("pubcache-upstream-timeout", envDuration("VULOS_RELAY_PUBCACHE_UPSTREAM_TIMEOUT", 0), "timeout for one upstream read (0=default 15s)")
+		pcInflight     = flag.Int("pubcache-max-inflight", int(envInt64("VULOS_RELAY_PUBCACHE_MAX_INFLIGHT", 0)), "max concurrent upstream fetches across the role (0=default 16)")
+		pcServeFeeds   = flag.Bool("pubcache-serve-feeds", envOr("VULOS_RELAY_PUBCACHE_SERVE_FEEDS", "") == "1", "also proxy the MUTABLE feed head/range reads (never cached; a feed head is signature-authenticated, which this node cannot verify)")
 	)
 	flag.Parse()
 
@@ -243,6 +261,18 @@ func main() {
 
 		RevokeSweepPeriod: *revokeSweep,
 
+		EnablePubCache: *enablePubCache,
+		PubCache: pubcache.Config{
+			PathPrefix:          *pcPrefix,
+			Upstreams:           splitCSV(*pcUpstreams),
+			MaxObjectBytes:      *pcMaxObject,
+			MaxCacheBytes:       *pcMaxCache,
+			TTL:                 *pcTTL,
+			UpstreamTimeout:     *pcUpstreamTO,
+			MaxUpstreamInflight: *pcInflight,
+			ServeFeeds:          *pcServeFeeds,
+		},
+
 		EnableRendezvous: *enableRDV,
 		Rendezvous: rendezvous.Config{
 			PathPrefix:           *rdvPrefix,
@@ -278,6 +308,14 @@ func main() {
 			turn = "STUN+TURN(ephemeral creds)"
 		}
 		log.Printf("vulos-relayd: RENDEZVOUS role ENABLED prefix=%s ice=%s (announce/resolve/signal/mailbox on the apex host; content-blind, CP-optional)", *rdvPrefix, turn)
+	}
+	if *enablePubCache {
+		feeds := "content-addressed reads only"
+		if *pcServeFeeds {
+			feeds = "content-addressed reads + mutable feed passthrough (never cached)"
+		}
+		log.Printf("vulos-relayd: PUBCACHE (DMTAP-PUB cache/pin) role ENABLED prefix=%s upstreams=%d %s", *pcPrefix, len(splitCSV(*pcUpstreams)), feeds)
+		log.Printf("vulos-relayd: NOTE this role serves PUBLIC PLAINTEXT you can read (dmtap § 22.6.1) — unlike the tunnel/mailbox/rendezvous roles it is NOT content-blind; every object is verified against its content address before it is cached or served")
 	}
 	if *trustProxy {
 		log.Printf("vulos-relayd: TRUSTING X-Forwarded-* from a fronting proxy (ensure a trusted TLS-terminating edge fronts this relay)")

@@ -59,6 +59,15 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// CACHE/PIN ROLE: same apex-only dispatch for the DMTAP-PUB public-object
+	// read surface (/.well-known/dmtap-pub/*). A box reached at <name>.<domain>
+	// keeps full control of its own well-known paths — a box may serve the very
+	// same role itself, and the relay must never shadow it.
+	if s.pubcache != nil && s.nameFromHost(r.Host) == "" && underPrefix(r.URL.Path, s.pubcache.Prefix()) {
+		s.pubcache.ServeHTTP(w, r)
+		return
+	}
+
 	name, trimmedPath, matched := s.route(r)
 	if !matched {
 		s.metrics.request(outcomeNoTunnel)
