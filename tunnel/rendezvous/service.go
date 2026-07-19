@@ -380,7 +380,7 @@ func (s *Service) handleAnnounce(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "signature verification failed")
 		return
 	}
-	if !s.replay.checkAndRecord(key, req.Nonce, req.Timestamp, now) {
+	if !s.replay.CheckAndRecord(key, req.Nonce, req.Timestamp, now) {
 		s.st.announceRejects.Add(1)
 		writeErr(w, http.StatusConflict, "stale or replayed request")
 		return
@@ -431,7 +431,7 @@ func (s *Service) handleWithdraw(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "signature verification failed")
 		return
 	}
-	if !s.replay.checkAndRecord(key, req.Nonce, req.Timestamp, now) {
+	if !s.replay.CheckAndRecord(key, req.Nonce, req.Timestamp, now) {
 		writeErr(w, http.StatusConflict, "stale or replayed request")
 		return
 	}
@@ -538,7 +538,7 @@ func (s *Service) depositHandler(q *queue, domain string, counter *atomic.Uint64
 			writeErr(w, http.StatusUnauthorized, "signature verification failed")
 			return
 		}
-		if !s.replay.checkAndRecord(fromKey, req.Nonce, req.Timestamp, now) {
+		if !s.replay.CheckAndRecord(fromKey, req.Nonce, req.Timestamp, now) {
 			writeErr(w, http.StatusConflict, "stale or replayed request")
 			return
 		}
@@ -609,7 +609,7 @@ func (s *Service) pollHandler(q *queue, domain string, counter *atomic.Uint64) h
 			writeErr(w, http.StatusUnauthorized, "signature verification failed")
 			return
 		}
-		if !s.replay.checkAndRecord(key, req.Nonce, req.Timestamp, now) {
+		if !s.replay.CheckAndRecord(key, req.Nonce, req.Timestamp, now) {
 			writeErr(w, http.StatusConflict, "stale or replayed request")
 			return
 		}
@@ -686,7 +686,7 @@ func (s *Service) ackHandler(q *queue, domain string) http.HandlerFunc {
 			writeErr(w, http.StatusUnauthorized, "signature verification failed")
 			return
 		}
-		if !s.replay.checkAndRecord(key, req.Nonce, req.Timestamp, now) {
+		if !s.replay.CheckAndRecord(key, req.Nonce, req.Timestamp, now) {
 			writeErr(w, http.StatusConflict, "stale or replayed request")
 			return
 		}
