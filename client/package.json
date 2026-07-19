@@ -62,6 +62,13 @@
       "require": "./dist-lib/fabric.cjs",
       "default": "./dist-lib/fabric.js"
     },
+    "./rendezvous": {
+      "source": "./src/rendezvous.js",
+      "types": "./dist-lib/rendezvous.d.ts",
+      "import": "./dist-lib/rendezvous.js",
+      "require": "./dist-lib/rendezvous.cjs",
+      "default": "./dist-lib/rendezvous.js"
+    },
     "./presence": {
       "source": "./src/presence.js",
       "types": "./dist-lib/presence.d.ts",

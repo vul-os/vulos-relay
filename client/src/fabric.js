@@ -35,6 +35,7 @@ import {
 import { PreKeyStore, x3dhInitiate, x3dhRespond } from './prekeys.js'
 import { tokenTransportSecure } from './secureTransport.js'
 import { RelayDepositError } from './errors.js'
+import { RendezvousClient, RendezvousIdentity } from './rendezvous.js'
 
 /**
  * Byte-length of a relay payload datum.  Used by the billing meter to count
@@ -107,8 +108,42 @@ export class FabricClient extends EventTarget {
     authToken = null,
     allowUnsignedRelayAuth = false,
     requirePeerAuth = true,
+    // ── OPEN RENDEZVOUS transport (optional) ─────────────────────────────────
+    // When set, this points the fabric at ANY vulos-relayd's open
+    // announce/resolve/signal/mailbox + ICE surface, as an alternative to the
+    // host box's /api/peering/* backend. Providing it ONLY changes defaults that
+    // were not explicitly overridden (ICE is derived from the relay), and exposes
+    // a ready RendezvousClient at .rendezvous — the existing /api/peering/* path
+    // is untouched when this option is absent.
+    rendezvousBaseUrl = '',
+    // Ed25519 identity for rendezvous writes. A RendezvousIdentity, or a 32-byte
+    // secret key (Uint8Array), or omitted to auto-generate an ephemeral one.
+    rendezvousIdentity = null,
+    // Mount prefix on the relay (default "/rendezvous").
+    rendezvousPrefix = '/rendezvous',
   }) {
     super()
+
+    // Rendezvous mode: derive the ICE URL from the relay unless the caller set an
+    // explicit iceUrl, and build the RendezvousClient. This runs BEFORE the token
+    // transport guard below so a rendezvous-derived ICE URL is validated too.
+    this._rendezvous = null
+    if (rendezvousBaseUrl) {
+      let ident = rendezvousIdentity
+      if (!(ident instanceof RendezvousIdentity)) {
+        ident = ident ? new RendezvousIdentity(ident) : RendezvousIdentity.generate()
+      }
+      this._rendezvous = new RendezvousClient({
+        baseUrl: rendezvousBaseUrl,
+        identity: ident,
+        prefix: rendezvousPrefix,
+        authToken,
+      })
+      // Only override ICE when the caller left it at the /api/peering default.
+      if (iceUrl === '/api/peering/ice') {
+        iceUrl = this._rendezvous.iceUrl()
+      }
+    }
 
     // ── Credential-transport guard (security: plaintext token leak) ──────────
     // When an authToken is configured it is attached as `Authorization: Bearer`
@@ -273,6 +308,17 @@ export class FabricClient extends EventTarget {
     const out = {}
     for (const [id, ps] of this._peers) out[id] = ps.state
     return out
+  }
+
+  /**
+   * The RendezvousClient bound to this fabric when constructed with a
+   * `rendezvousBaseUrl`, else null. Use it for open announce/resolve/signal/
+   * mailbox against the relay (see rendezvous.js). Its `.key` is this peer's
+   * Ed25519 rendezvous address.
+   * @type {RendezvousClient|null}
+   */
+  get rendezvous() {
+    return this._rendezvous
   }
 
   // ── Billing G-1: relay byte meter ─────────────────────────────────────────

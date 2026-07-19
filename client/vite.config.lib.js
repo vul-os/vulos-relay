@@ -22,6 +22,7 @@ const entries = {
   offlineBootstrap:  resolve(dir, 'src/offlineBootstrap.js'),
   signaling:         resolve(dir, 'src/signaling.js'),
   fabric:            resolve(dir, 'src/fabric.js'),
+  rendezvous:        resolve(dir, 'src/rendezvous.js'),
   presence:          resolve(dir, 'src/presence.js'),
   call:              resolve(dir, 'src/call/index.js'),
   useLiveCursors:    resolve(dir, 'src/useLiveCursors.js'),
