@@ -45,6 +45,35 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   `rendezvousBaseUrl` / `rendezvousIdentity` / `rendezvousPrefix` options that point
   it at any relayd's rendezvous surface (deriving ICE, exposing `.rendezvous`); the
   existing `/api/peering/*` path is unchanged when the option is absent.
+- **`FabricClient` is now fully rendezvous-native — OS-free P2P for standalone
+  apps.** With `rendezvousBaseUrl` set, `FabricClient` runs its *complete*
+  signaling lifecycle (presence discovery, offer/answer, trickle-ICE,
+  polite-peer negotiation) over the relay's open `announce`/`resolve`/`signal`
+  surface — **no host box, no `/api/peering/*` backend**. Without the option it
+  uses the host-box WebSocket exactly as before (no behavior change; choose per
+  config). New `RendezvousSignalingClient` (`@vulos/relay-client/rendezvousSignaling`)
+  is a drop-in transport with the same events/methods as `SignalingClient`.
+  - **Identity bridging (two distinct identities).** An **Ed25519** rendezvous
+    identity signs the outer rendezvous envelope (accountability + replay at the
+    relay); the per-session **ECDSA-P256** peer key rides *inside* the opaque
+    signal payload, so the end-to-end peer-auth handshake (DTLS-fingerprint
+    pinning, TOFU key/box/prekey import, anti-downgrade v2, replay/freshness) is
+    **byte-for-byte identical** to the host-box path — it runs through the shared,
+    transport-agnostic `SignalingClient._processSignal`/`_buildSignalPayload`. The
+    rendezvous identity is **ephemeral per session by default** (matching the
+    ephemeral ECDSA session key, preserving the current security model); inject a
+    stable `rendezvousIdentity` for a durable rendezvous address.
+  - **Presence discovery** uses a deterministic session-derived Ed25519 **room
+    identity** whose signal inbox is a content-blind presence board (peek-on-poll
+    peers, heartbeat refresh, `leave` tombstone). **Live-cursors / roster
+    (`usePresence`, `useLiveCursors`) work unchanged over rendezvous** — they ride
+    `FabricClient`'s data channel, not the host `/api/peering` presence WS (which
+    remains host-box-only). See **`docs/RENDEZVOUS.md` § Using FabricClient without
+    a host box**.
+  - The **P2P-failure relay circuit** also moves to the rendezvous **mailbox** in
+    this mode (the same ECDSA-signed, XChaCha20-Poly1305-sealed envelope, opaque to
+    the relay), so the OS-free path has **no dead host-box dependency**; forward
+    secrecy degrades gracefully to signed-prekey-only X3DH (no OPK-claim endpoint).
 
 ### Security — audit follow-ups (relay hardening + honest confidentiality docs)
 

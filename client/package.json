@@ -69,6 +69,13 @@
       "require": "./dist-lib/rendezvous.cjs",
       "default": "./dist-lib/rendezvous.js"
     },
+    "./rendezvousSignaling": {
+      "source": "./src/rendezvousSignaling.js",
+      "types": "./dist-lib/rendezvousSignaling.d.ts",
+      "import": "./dist-lib/rendezvousSignaling.js",
+      "require": "./dist-lib/rendezvousSignaling.cjs",
+      "default": "./dist-lib/rendezvousSignaling.js"
+    },
     "./presence": {
       "source": "./src/presence.js",
       "types": "./dist-lib/presence.d.ts",

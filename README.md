@@ -149,8 +149,13 @@ vs Path B (Vulos-hosted) — are in [GETTING-STARTED.md](docs/GETTING-STARTED.md
   **Ed25519-signed** (fail-closed, replay-protected); the node is **content-blind**
   (opaque blobs keyed by public key, never dialed) and **CP-optional / fully
   self-hostable**. The `@vulos/relay-client` SDK ships the reference client
-  (`RendezvousClient`), and `FabricClient` takes a `rendezvousBaseUrl` option to use
-  any relayd's rendezvous surface. Protocol: **[docs/RENDEZVOUS.md](docs/RENDEZVOUS.md)**.
+  (`RendezvousClient`), and **`FabricClient` takes a `rendezvousBaseUrl` option to
+  run its *entire* signaling lifecycle (presence discovery + offer/answer/ICE +
+  polite-peer negotiation) over any relayd's rendezvous surface — OS-free P2P with
+  no host box.** The relay only moves opaque bytes: an Ed25519 rendezvous identity
+  signs the envelope while the per-session ECDSA peer-auth handshake rides
+  unchanged inside the opaque payload. Protocol + walkthrough:
+  **[docs/RENDEZVOUS.md](docs/RENDEZVOUS.md)** (§ *Using FabricClient without a host box*).
 - **Tree-shakeable subpaths** — import only what you need
   (`@vulos/relay-client/endpoints`, `/fabric`, `/presence`, `/rendezvous`, …); the
   `xlsx`-using `roundTripCheck` is deliberately kept out of the root barrel.
@@ -209,6 +214,10 @@ const fabric = new FabricClient({
   signalingUrl: `${base.replace(/^http/, 'ws')}/api/peering/stream`,
   iceUrl:       `${base}/api/peering/ice`,   // optional; this is the default path
   authToken:    session.jwt,                 // optional Bearer JWT
+  // OS-free alternative: drop signalingUrl/iceUrl and set rendezvousBaseUrl to run
+  // the whole signaling lifecycle over a relay's open rendezvous surface, no host
+  // box. See docs/RENDEZVOUS.md § "Using FabricClient without a host box".
+  //   rendezvousBaseUrl: 'https://relay.example.com',
 })
 
 // 3. Receive application messages (e.g. CRDT ops) from peers.

@@ -23,6 +23,7 @@ const entries = {
   signaling:         resolve(dir, 'src/signaling.js'),
   fabric:            resolve(dir, 'src/fabric.js'),
   rendezvous:        resolve(dir, 'src/rendezvous.js'),
+  rendezvousSignaling: resolve(dir, 'src/rendezvousSignaling.js'),
   presence:          resolve(dir, 'src/presence.js'),
   call:              resolve(dir, 'src/call/index.js'),
   useLiveCursors:    resolve(dir, 'src/useLiveCursors.js'),

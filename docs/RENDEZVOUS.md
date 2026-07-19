@@ -240,3 +240,86 @@ peer drains it on next connect. The relay only ever moves opaque bytes.
   (`import { RendezvousClient } from '@vulos/relay-client/rendezvous'`), and
   `FabricClient` accepts a `rendezvousBaseUrl` option to use any relayd's rendezvous
   surface instead of a host box's `/api/peering/*`.
+
+---
+
+## 9. Using `FabricClient` without a host box
+
+`FabricClient` normally signals over a host box's `/api/peering/*` WebSocket. Set
+**`rendezvousBaseUrl`** and it instead runs its **complete** signaling lifecycle —
+presence discovery, offer/answer, trickle-ICE, polite-peer negotiation — over a
+relay's open `announce`/`resolve`/`signal` surface. **No Vulos OS, no host box.**
+Leave the option unset and the host-box WebSocket path is used exactly as before;
+the two paths are both fully supported and chosen per config.
+
+```js
+import { FabricClient } from '@vulos/relay-client/fabric'
+
+const fabric = new FabricClient({
+  sessionId: 'doc-42',
+  peerId:    myUserId,
+  rendezvousBaseUrl: 'https://relay.example.com',   // ← turns on OS-free mode
+  // rendezvousIdentity: <RendezvousIdentity | 32-byte secret>,  // optional (see below)
+})
+fabric.addEventListener('message', ({ detail }) => …)
+await fabric.join()          // announces, discovers peers, negotiates WebRTC
+fabric.send(bytes)           // P2P once the data channel is up
+```
+
+`fabric.rendezvous` exposes the underlying `RendezvousClient` (its `.key` is this
+peer's Ed25519 rendezvous address). ICE is auto-derived from the relay.
+
+### 9.1 Two distinct identities (identity bridging)
+
+Rendezvous **writes** are authenticated by **Ed25519**; the `FabricClient` **peer
+handshake** is authenticated by a per-session **ECDSA-P256** key. These stay
+separate and complementary:
+
+| Identity | Signs | Authenticates |
+|---|---|---|
+| **Ed25519** rendezvous key | the outer rendezvous envelope (announce / deposit / poll) | the write, to the *relay* — accountability + replay protection |
+| **ECDSA-P256** session key | the inner `join`/`offer`/`answer`/`ice` payload (carried opaquely) | the *peer*, end to end — DTLS-fingerprint pinning, TOFU key binding, X3DH prekeys, anti-downgrade |
+
+The ECDSA pubkey rides **inside** the opaque signal payload the relay never parses,
+so the peer-auth handshake is **byte-for-byte identical** to the host-box path — the
+relay only moves opaque bytes keyed by Ed25519 public key and can neither read nor
+forge the inner handshake.
+
+By default the Ed25519 rendezvous identity is **ephemeral per session** (generated
+fresh, matching the ephemeral per-session ECDSA key — this preserves the existing
+security model, which has no persistent cross-session identity). Pass
+**`rendezvousIdentity`** (a `RendezvousIdentity` or a 32-byte secret) to use a
+**stable** rendezvous address across sessions.
+
+> **Open-mode trust.** With no host-box JWT, a `peerId` is *self-asserted* and bound
+> **TOFU** (first ECDSA key seen for a peerId wins), exactly as in the host-box
+> model — the boundary is just "knows the sessionId" rather than "authenticated by
+> the host". The real cryptographic identity is the pinned ECDSA key; the
+> peerId↔rendezvous-key mapping is a routing hint the handshake does not trust. Use
+> **unguessable session ids** for private rooms.
+
+### 9.2 How discovery works (the session "room" board)
+
+Rendezvous is key-addressed point-to-point, so there is no server-side room to
+broadcast joins into. `FabricClient` synthesises one: a **deterministic Ed25519
+"room" identity is derived from the `sessionId`** (every member computes the same
+key), and its signal inbox is used as a shared, **content-blind presence board**.
+Each member deposits its signed `join` (the same payload the WS path broadcasts,
+plus its own rendezvous address) onto the board and long-polls the board to
+discover peers; `offer`/`answer`/`ice` are then addressed point-to-point to each
+peer's own rendezvous inbox. Board pickups are a **non-destructive peek** (§4), so
+every member sees every member; heartbeats refresh presence and a `leave` tombstone
+drops it. The room key is *not secret* — knowing the `sessionId` grants membership.
+
+### 9.3 Presence, live cursors, and the relay fallback
+
+- **Roster + live cursors work unchanged.** `PresenceManager` (`usePresence`) and
+  `useLiveCursors` ride `FabricClient`'s **data channel** (`send()` / `message` /
+  `state`), which is transport-agnostic — they behave identically whether signaling
+  ran over the host box or over rendezvous. The dedicated host **`/api/peering`
+  presence WebSocket** is a *separate* feature and remains **host-box-only**.
+- **P2P-failure fallback** (when WebRTC cannot connect) uses the rendezvous
+  **mailbox** in this mode: the same ECDSA-signed, XChaCha20-Poly1305-sealed
+  envelope the host-box relay circuit uses, opaque to the relay. Forward secrecy
+  degrades gracefully to **signed-prekey-only X3DH** (there is no host-box
+  one-time-prekey *claim* endpoint), and is never dropped silently for a v2 peer.
