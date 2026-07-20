@@ -572,8 +572,7 @@ func TestUpstreamsAreConfigOnly(t *testing.T) {
 // TestUpstreamRedirectsNotFollowed: a redirect is exactly how an allowlist gets
 // talked out of its allowlist, so it must fail rather than be chased.
 func TestUpstreamRedirectsNotFollowed(t *testing.T) {
-	var elsewhere *httptest.Server
-	elsewhere = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("secret from a host the operator never listed"))
 	}))
 	defer elsewhere.Close()

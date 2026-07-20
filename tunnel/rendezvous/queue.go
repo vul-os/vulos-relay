@@ -3,7 +3,6 @@ package rendezvous
 import (
 	"crypto/rand"
 	"encoding/binary"
-	"sort"
 	"sync"
 	"time"
 )
@@ -205,19 +204,6 @@ func (q *queue) ack(key string, ids []string, now time.Time) int {
 	return removed
 }
 
-// pendingCount returns the number of live blobs for key — for tests/metrics.
-func (q *queue) pendingCount(key string, now time.Time) int {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	n := 0
-	for _, b := range q.byKey[key] {
-		if now.Before(b.ExpiresAt) {
-			n++
-		}
-	}
-	return n
-}
-
 // sweepLocked reaps expired blobs at most ~once per SweepEvery. Caller holds q.mu.
 func (q *queue) sweepLocked(now time.Time) {
 	if now.Sub(q.swep) < q.caps.SweepEvery {
@@ -241,23 +227,6 @@ func (q *queue) sweepLocked(now time.Time) {
 			q.bytes[key] = live
 		}
 	}
-}
-
-// keys returns the recipient keys with live blobs, sorted — test helper.
-func (q *queue) keys(now time.Time) []string {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	out := make([]string, 0, len(q.byKey))
-	for k, pending := range q.byKey {
-		for _, b := range pending {
-			if now.Before(b.ExpiresAt) {
-				out = append(out, k)
-				break
-			}
-		}
-	}
-	sort.Strings(out)
-	return out
 }
 
 // newBlobID mints a sortable, collision-resistant opaque id: 6 bytes of the deposit

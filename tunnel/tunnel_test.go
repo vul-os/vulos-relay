@@ -25,14 +25,6 @@ const (
 	testName   = "box1"
 )
 
-// harness wires a relay server + a local target + (optionally) an agent.
-type harness struct {
-	t        *testing.T
-	relay    *httptest.Server // the relay's public+control HTTP surface (plain http for tests)
-	target   *httptest.Server // the box's local app
-	agentObj *agent.Agent
-}
-
 // newRelay stands up a relay server with a single grant for testName, plus path
 // mode enabled so we can route by /t/<name>/ against the httptest host.
 func newRelay(t *testing.T, grants []server.Grant) *httptest.Server {

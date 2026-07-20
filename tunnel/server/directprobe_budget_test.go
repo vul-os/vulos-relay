@@ -40,7 +40,9 @@ func TestDirectProbe_BudgetExhausted(t *testing.T) {
 	t.Cleanup(s.Close)
 
 	// Account "acct-1": first burst(=2) probes allowed, the third refused.
-	if !s.allowDirectProbe("acct-1", "box1") || !s.allowDirectProbe("acct-1", "box1") {
+	// Two separate draws against acct-1's budget; burst is 2.
+	first, second := s.allowDirectProbe("acct-1", "box1"), s.allowDirectProbe("acct-1", "box1")
+	if !first || !second {
 		t.Fatal("first two probes within burst must be allowed")
 	}
 	if s.allowDirectProbe("acct-1", "box1") {
@@ -51,7 +53,8 @@ func TestDirectProbe_BudgetExhausted(t *testing.T) {
 		t.Fatal("a different account's probe budget must be independent")
 	}
 	// Unbilled (empty account) is keyed by name and also bounded.
-	if !s.allowDirectProbe("", "boxA") || !s.allowDirectProbe("", "boxA") {
+	unbilled1, unbilled2 := s.allowDirectProbe("", "boxA"), s.allowDirectProbe("", "boxA")
+	if !unbilled1 || !unbilled2 {
 		t.Fatal("unbilled probes within burst must be allowed")
 	}
 	if s.allowDirectProbe("", "boxA") {

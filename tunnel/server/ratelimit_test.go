@@ -76,7 +76,9 @@ func TestRateLimiter_IdleEviction(t *testing.T) {
 
 func TestGlobalRateLimiter_CapThenRecover(t *testing.T) {
 	g := newGlobalRateLimiter(10, 2)
-	if !g.allow() || !g.allow() {
+	// Two separate draws against the global bucket; burst is 2.
+	first, second := g.allow(), g.allow()
+	if !first || !second {
 		t.Fatal("first two within burst should pass")
 	}
 	if g.allow() {

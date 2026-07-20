@@ -187,7 +187,10 @@ func TestAdv_ControlRateLimit_PerIP429AndIsolation(t *testing.T) {
 
 	// Per-key isolation at the limiter: abuser exhausts its own bucket; a distinct
 	// key is unaffected.
-	if !s.ctrlLimiter.allow("1.2.3.4") || !s.ctrlLimiter.allow("1.2.3.4") {
+	// Two separate draws against the same key's bucket: burst is 2, so both
+	// must pass and each consumes a token.
+	first, second := s.ctrlLimiter.allow("1.2.3.4"), s.ctrlLimiter.allow("1.2.3.4")
+	if !first || !second {
 		t.Fatal("first two attempts from a key should pass")
 	}
 	if s.ctrlLimiter.allow("1.2.3.4") {

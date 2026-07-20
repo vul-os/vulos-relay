@@ -1,7 +1,6 @@
 package rendezvous
 
 import (
-	"sort"
 	"sync"
 	"time"
 )
@@ -173,18 +172,4 @@ func (s *presenceStore) sweepLocked(now time.Time) {
 			delete(s.byKey, k)
 		}
 	}
-}
-
-// sortedKeys returns the live keys sorted — test/debug helper only.
-func (s *presenceStore) sortedKeys(now time.Time) []string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]string, 0, len(s.byKey))
-	for k, rec := range s.byKey {
-		if now.Before(rec.expiresAt) {
-			out = append(out, k)
-		}
-	}
-	sort.Strings(out)
-	return out
 }

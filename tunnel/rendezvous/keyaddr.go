@@ -43,6 +43,10 @@ import (
 // this binary, so there is exactly one implementation of each and both roles
 // call it. The local names below are kept so this package continues to read as
 // self-describing.
+//
+// Only the symbols this package actually uses are aliased. Mirroring every
+// keyauth export would make this file a second copy of that API's surface, and
+// an alias with no caller tells a reader the role uses something it does not.
 
 // keyB64 is the canonical URL-addressing of an Ed25519 public key: the 32 raw
 // key bytes in unpadded base64url. It is the single key encoding used
@@ -53,18 +57,8 @@ import (
 // b64 is the unpadded base64url codec used for every binary field on the wire.
 var b64 = keyauth.B64
 
-// pubKeyLen is the Ed25519 public-key length in bytes.
-const pubKeyLen = keyauth.PubKeyLen
-
 // sigLen is the Ed25519 signature length in bytes.
 const sigLen = keyauth.SigLen
-
-var (
-	errBadKey   = keyauth.ErrBadKey
-	errBadSig   = keyauth.ErrBadSig
-	errSigFail  = keyauth.ErrSigFail
-	errBadNonce = keyauth.ErrBadNonce
-)
 
 // decodeKey parses a base64url-encoded Ed25519 public key of the exact expected
 // length, failing closed on any malformed or wrong-length input.
@@ -72,9 +66,6 @@ func decodeKey(s string) (ed25519.PublicKey, error) { return keyauth.DecodeKey(s
 
 // normalizeKey validates a key string and returns its canonical encoding.
 func normalizeKey(s string) string { return keyauth.NormalizeKey(s) }
-
-// decodeSig parses a base64url Ed25519 signature of the exact expected length.
-func decodeSig(s string) ([]byte, error) { return keyauth.DecodeSig(s) }
 
 // canonicalMessage builds the domain-separated, length-prefixed byte string a
 // signature covers (keyauth.CanonicalMessage). Documented in
@@ -88,15 +79,8 @@ func verifySig(pub ed25519.PublicKey, sigB64 string, msg []byte) error {
 	return keyauth.VerifySig(pub, sigB64, msg)
 }
 
-// keyEqual is a constant-time equality check for two canonical key strings.
-func keyEqual(a, b string) bool { return keyauth.KeyEqual(a, b) }
-
 // replayGuard is the shared freshness/replay guard (keyauth.Guard).
 type replayGuard = keyauth.Guard
-
-// defaultClockSkew is how far a request timestamp may deviate from the node's
-// clock in either direction. It also sets how long a nonce must be remembered.
-const defaultClockSkew = keyauth.DefaultClockSkew
 
 // newReplayGuard builds a guard. skew<=0 => defaultClockSkew; maxKeys<=0 => 100k.
 func newReplayGuard(skew time.Duration, maxKeys int) *replayGuard {

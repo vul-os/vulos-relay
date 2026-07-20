@@ -68,6 +68,35 @@ func TestResolveEndpoint_FallsBackOnError(t *testing.T) {
 	}
 }
 
+// TestResolveEndpoint_DrainMigratesToNewPoP covers the whole point of the routing
+// hook, stated in resolve.go's own header: "when a PoP drains, the CP stops handing
+// it out, so the agent's next resolve returns a DIFFERENT PoP and the tunnel moves
+// there." Every other test here resolves once, so an agent that cached its first
+// assignment forever would pass all of them and still never migrate off a draining
+// PoP. This resolves twice across a directory change and asserts the second dial
+// follows it.
+func TestResolveEndpoint_DrainMigratesToNewPoP(t *testing.T) {
+	fr := &fakeResolver{asg: Assignment{Endpoint: "wss://hel1.relay.test", Region: "eu-central", PoPID: "hel1-a"}}
+	a := New(Options{ServerURL: "wss://fallback.test", Token: "t", Name: "box", LocalAddr: "127.0.0.1:1", Resolver: fr})
+
+	if got := a.resolveEndpoint(context.Background()); got != "wss://hel1.relay.test" {
+		t.Fatalf("first resolve = %q, want the initially assigned PoP", got)
+	}
+
+	// hel1-a starts draining: the directory now hands out a different PoP.
+	fr.set(Assignment{Endpoint: "wss://fsn1.relay.test", Region: "eu-central", PoPID: "fsn1-b"})
+
+	if got := a.resolveEndpoint(context.Background()); got != "wss://fsn1.relay.test" {
+		t.Fatalf("second resolve = %q, want the new PoP — a drain cannot migrate if the agent pins its first assignment", got)
+	}
+	if snap := a.Snapshot(); snap.AssignedPoP != "fsn1-b" {
+		t.Fatalf("Snapshot still reports %q after migrating; operators would read a drained PoP as live", snap.AssignedPoP)
+	}
+	if fr.hits != 2 {
+		t.Fatalf("directory consulted %d times, want one resolve per dial", fr.hits)
+	}
+}
+
 // TestHTTPResolver_ParsesAssignment: the default HTTP resolver hits the directory
 // contract (GET /api/relay/assign?name=…, Bearer token) and decodes the assignment.
 func TestHTTPResolver_ParsesAssignment(t *testing.T) {
