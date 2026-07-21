@@ -6,8 +6,10 @@
 
 **The sovereign connectivity fabric — `@vulos/relay-client` peer-fabric SDK + a self-hosted Go reverse-tunnel**
 
+<sub><img src="logo.png" height="14" alt="VulOS"> Part of <strong><a href="https://vulos.org">VulOS</a></strong> — the open, self-hostable web OS &amp; app suite. Runs standalone, or as an app hosted by the Vulos OS.</sub>
+
 [![npm](https://img.shields.io/npm/v/%40vulos%2Frelay-client?label=%40vulos%2Frelay-client)](https://www.npmjs.com/package/@vulos/relay-client)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 [![CI](https://github.com/vul-os/vulos-relay/actions/workflows/ci.yml/badge.svg)](https://github.com/vul-os/vulos-relay/actions/workflows/ci.yml)
 
 *Vulos — rooted in **vula**, the Zulu and Xhosa word for **open**.*
@@ -646,7 +648,9 @@ commit conventions, and scope constraints.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+[MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE) — © VulOS. Vulos Relay is a
+VulOS project; source and issues at
+[github.com/vul-os/vulos-relay](https://github.com/vul-os/vulos-relay).
 
 ---
 
