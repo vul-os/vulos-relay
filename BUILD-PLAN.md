@@ -25,7 +25,7 @@ pick the highest-priority unblocked wave, dispatch Sonnet sub-agents to do it, v
 | W1 | **envoir → node-only, green + committed** | IN PROGRESS | substrate repointed to kotva-core@tag (done); remove gateway coupling from `conformance-runner` + `fuzz`; build+test; commit+push |
 | W2 | **Relocate gateway conformance + fuzz** envoir→wakala | TODO | the GWALIAS/GWATT/LEG/GWNAME cases + gateway_admission/gateway_alias fuzz targets belong with the gateway in wakala |
 | W3 | **broker-economics adopts real kotva-core** | TODO | drop the stub `kotva_core` seam; real Descriptor/Tariff/UsageReceipt signing over kotva-core identity + deterministic CBOR (CONTRACT §6) |
-| W4 | **reachability-adapter SNI/tunnel transport** | TODO | the content-blindness fix: SNI-passthrough demux + reverse tunnel (Noise+yamux), fail-closed (REACH-1/-6). Retire the Go L7 proxy |
+| W4 | **reachability-adapter SNI/tunnel transport** | DONE (9bd0fc0) | SNI-passthrough peek + yamux reverse tunnel + fail-closed RST ingress; 16 tests. **REACH-2 gap:** box↔adapter control channel is unauthenticated plain TCP (no key-auth to box IK) — blocked on kotva-core identity in the workspace (do after W3). NOT public-safe until then. |
 | W5 | **relay crate** (mesh, blind/structural) | TODO | libp2p Circuit Relay v2 wrapper; Coordinator posture |
 | W6 | **media-relay crate** (blind-routing) | TODO | orchestrate coturn/LiveKit sidecar; SFrame-sealed payload, routing metadata visible (RFC 9605) |
 | W7 | **admin surface** | TODO | operator admin for a coordinator: descriptor + tariff config, quota/rate policy, receipts view, key mgmt. Per-kind. HTTP (axum) admin API + auth |
