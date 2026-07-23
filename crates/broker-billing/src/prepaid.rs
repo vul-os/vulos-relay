@@ -29,7 +29,7 @@
 //! more than [`crate::receipt::ReceiptLog`] can protect against a fabricated receipt (see that
 //! module's one-directional-audit doc); it is disclosed here for the same reason.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
 use broker_economics::{IdentityKey, UsageReceipt};
@@ -135,6 +135,11 @@ pub struct PrepaidLedger {
     debits: Mutex<Vec<DebitRecord>>,
     refunds: Mutex<Vec<RefundRecord>>,
     next_tx_seq: Mutex<u64>,
+    /// funding_refs already credited — top_up is idempotent on this, so a *replayed* funding
+    /// confirmation (e.g. a retried payment webhook) credits at most once. A funding_ref is a
+    /// pointer to one real on-rail funding event and is unique to it; seeing it twice is a replay,
+    /// not two fundings. Mirrors `broker-billing-patala`'s `credited_references` dedup.
+    credited_refs: Mutex<BTreeSet<String>>,
 }
 
 impl PrepaidLedger {
@@ -150,6 +155,7 @@ impl PrepaidLedger {
             debits: Mutex::new(Vec::new()),
             refunds: Mutex::new(Vec::new()),
             next_tx_seq: Mutex::new(0),
+            credited_refs: Mutex::new(BTreeSet::new()),
         }
     }
 
@@ -170,6 +176,24 @@ impl PrepaidLedger {
     /// corresponds to funding that landed on a real rail; it does not itself verify anything.
     /// Always succeeds (a top-up can never be "refused" the way a debit can).
     pub fn top_up(&self, payer: &[u8], amount: u64, funding_ref: impl Into<String>) -> TopUpRecord {
+        let fref = funding_ref.into();
+        // Idempotent on funding_ref. Hold `credited_refs` across the whole credit so the dedup
+        // check, the balance credit, and the record push are one atomic step: a replayed
+        // funding_ref (e.g. a retried payment webhook) does NOT credit again — it returns the
+        // original record unchanged. Guards against double-crediting a single funding event.
+        let mut credited = self.credited_refs.lock().expect("prepaid ledger mutex poisoned");
+        if credited.contains(&fref) {
+            drop(credited);
+            return self
+                .top_ups
+                .lock()
+                .expect("prepaid ledger mutex poisoned")
+                .iter()
+                .find(|r| r.funding_ref == fref)
+                .cloned()
+                .expect("a credited funding_ref always has its original top-up record");
+        }
+
         let mut balances = self.balances.lock().expect("prepaid ledger mutex poisoned");
         let entry = balances.entry(payer.to_vec()).or_insert(0);
         *entry = entry.saturating_add(amount);
@@ -179,10 +203,12 @@ impl PrepaidLedger {
             payer: payer.to_vec(),
             amount,
             currency: self.currency.clone(),
-            funding_ref: funding_ref.into(),
+            funding_ref: fref.clone(),
             tx_seq: self.next_seq(),
         };
         self.top_ups.lock().expect("prepaid ledger mutex poisoned").push(record.clone());
+        credited.insert(fref);
+        drop(credited);
         record
     }
 
@@ -340,6 +366,22 @@ mod tests {
         let record = ledger.debit(b"payer", &bill(300, "USD")).unwrap();
         assert_eq!(record.amount, 300);
         assert_eq!(ledger.balance(b"payer"), 700);
+    }
+
+    #[test]
+    fn top_up_is_idempotent_on_funding_ref_no_double_credit() {
+        // A replayed funding confirmation (retried webhook / duplicate rail event) with the same
+        // funding_ref must credit AT MOST once — never double-credit. Matches the dedup the
+        // broker-billing-patala adapter already enforces on its own credited_references.
+        let ledger = PrepaidLedger::new("USD", 100);
+        let first = ledger.top_up(b"payer", 500, "rail-tx-abc");
+        let replay = ledger.top_up(b"payer", 500, "rail-tx-abc"); // same funding_ref
+        assert_eq!(ledger.balance(b"payer"), 500, "duplicate funding_ref must not re-credit");
+        assert_eq!(replay.tx_seq, first.tx_seq, "replay returns the original record, not a new one");
+        assert_eq!(ledger.top_ups().len(), 1, "only one top-up record for one funding event");
+        // A genuinely distinct funding event (different funding_ref) still credits.
+        ledger.top_up(b"payer", 250, "rail-tx-def");
+        assert_eq!(ledger.balance(b"payer"), 750);
     }
 
     #[test]
