@@ -22,7 +22,7 @@ pick the highest-priority unblocked wave, dispatch Sonnet sub-agents to do it, v
 
 | # | Wave | Status | Notes |
 |---|---|---|---|
-| W1 | **envoir → node-only, green + committed** | IN PROGRESS | substrate repointed to kotva-core@tag (done); remove gateway coupling from `conformance-runner` + `fuzz`; build+test; commit+push |
+| W1 | **envoir → node-only, green + committed** | RE-VERIFYING | edits done (gateway coupling removed, substrate repointed); build green; fixed conformance-runner vectors path (deleted dmtap-core → local snapshot from kotva-core@tag); re-running build+test → auto-commit if green |
 | W2 | **Relocate gateway conformance + fuzz** envoir→wakala | TODO | the GWALIAS/GWATT/LEG/GWNAME cases + gateway_admission/gateway_alias fuzz targets belong with the gateway in wakala |
 | W3 | **broker-economics adopts real kotva-core** | TODO | drop the stub `kotva_core` seam; real Descriptor/Tariff/UsageReceipt signing over kotva-core identity + deterministic CBOR (CONTRACT §6) |
 | W4 | **reachability-adapter SNI/tunnel transport** | DONE (9bd0fc0) | SNI-passthrough peek + yamux reverse tunnel + fail-closed RST ingress; 16 tests. **REACH-2 gap:** box↔adapter control channel is unauthenticated plain TCP (no key-auth to box IK) — blocked on kotva-core identity in the workspace (do after W3). NOT public-safe until then. |
@@ -32,7 +32,7 @@ pick the highest-priority unblocked wave, dispatch Sonnet sub-agents to do it, v
 | W8 | **billing model** | TODO | the CONTRACT §6 economics concretely: signed tariff, signed usage-receipts to the payer (one-directional audit), settlement seam (stablecoin/fiat adapter, e.g. x402), **no token**. Metering per kind |
 | W9 | **remaining kind scaffolds** | TODO | indexer / labeler / matcher / arbiter / oracle / compute crates — Coordinator posture + the §4 derived-view carve-out for indexer/labeler/matcher |
 | W10 | **conformance harness expansion** | TODO | COORD-1..8 runtime tests per kind; assert declared content-visibility matches observed behavior (discharge the Behavioral findings) |
-| W11 | **GitHub metadata + READMEs** | TODO | wakala + envoir: `gh repo edit` description + topics; rewrite READMEs (wakala=broker ref impl; envoir=node-only) |
+| W11 | **GitHub metadata + READMEs** | PARTIAL | GH description+topics done for wakala + envoir. wakala README rewritten (624cf9e). TODO: envoir README rewrite (node-only) — do after W1 commits |
 | W12 | **docs + CHANGELOG polish** | TODO | crate docs, CHANGELOG entries, honest-limits sections |
 
 ## Loop mechanics
