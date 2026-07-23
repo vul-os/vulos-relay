@@ -1,0 +1,37 @@
+# Wakala — the broker (coordinator) reference implementation of the KOTVA standard.
+#
+# This is a virtual workspace: one crate per coordinator *kind* plus the shared
+# `broker-economics` crate (the content-visibility model, authz, tariff, usage
+# receipts) and the `broker-conformance` harness (the CONTRACT COORD-1..8 checks).
+#
+# The Go reverse-tunnel relay + JS client SDK are preserved untouched alongside
+# this (HANDOVER §Guardrails-3) until the Rust port is proven.
+#
+# Substrate types (MOTE, envelope, identity/naming, PUB, SYNC, signing/DS-tags,
+# MLS glue, CBOR, crypto) come from `kotva-core`, a crate carved from envoir and
+# pinned by tag — NEVER tracked at HEAD (the isango guardrail, HANDOVER §Guardrails-1).
+# kotva-core does not exist yet; every crate that needs it depends on the seam in
+# `broker-economics::kotva_core` and stays stubbed until the tag lands.
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/broker-economics",
+    "crates/broker-conformance",
+    "crates/reachability-adapter",
+    "crates/gateway",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/vul-os/wakala"
+rust-version = "1.85"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+# Pinned once kotva-core is carved + tagged (HANDOVER §Guardrails-1):
+# [workspace.dependencies]
+# kotva-core = { git = "https://github.com/vul-os/kotva", tag = "core-vX.Y.Z" }

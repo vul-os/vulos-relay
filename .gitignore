@@ -24,3 +24,6 @@ dist-lib/
 # Ignore only the Playwright cache that the scripts/ install pulls in.
 scripts/node_modules/
 scripts/package-lock.json
+
+# Rust build output
+/target

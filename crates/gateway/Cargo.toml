@@ -1,0 +1,62 @@
+# gateway — the KOTVA mail *adapter* coordinator kind (the legacy SMTP/IMAP/POP3 bridge, spec §7).
+#
+# Folded out of envoir (was `envoir-gateway`) into Wakala, the broker reference implementation, so
+# every coordinator kind lives in one place and envoir becomes node-only. It depends on the
+# tag-pinned substrate (`kotva-core`, `kotva-mail`) — never a moving path dep (the isango guardrail).
+#
+# This is the ONE Wakala kind that is not content-blind: the legacy leg is unavoidably plaintext, so
+# it declares visibility `terminating` (CONTRACT §3.1/§5). It is optional and fades as adoption grows.
+[package]
+name = "gateway"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+description = "KOTVA mail adapter (the DMTAP legacy SMTP/IMAP/POP3 gateway) — the one terminating coordinator kind"
+repository = "https://github.com/vul-os/wakala"
+
+[dependencies]
+# The broker contract this kind is an instance of (CONTRACT §5): declares its content-visibility
+# and runs through the COORD-1..8 conformance harness.
+broker-economics = { path = "../broker-economics" }
+broker-conformance = { path = "../broker-conformance" }
+# Tag-pinned substrate (the isango guardrail: never HEAD, never a moving path dep).
+# MOTE build/seal, Identity + Ed25519, canonical §18 CBOR (spec §1, §2).
+kotva-core = { git = "https://github.com/vul-os/kotva", tag = "core-v0.2.0" }
+# RFC 5322 parse/render + SMTP DATA→MoteDraft + IMAP4rev2 server + MailStore projection
+# (`net` = std-only blocking TCP helpers; no async runtime).
+kotva-mail = { git = "https://github.com/vul-os/kotva", tag = "core-v0.2.0", features = ["net"] }
+
+# --- DKIM delegated-selector signing (spec §7.3; RFC 8463 ed25519-sha256, RFC 6376 relaxed) ---
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+sha2 = "0.10"
+# --- CSPRNG for the DNS query transaction-id (off-path-spoof resistance) ---
+getrandom = "0.2"
+# --- Errors ---
+thiserror = "1"
+# --- SIGINT/SIGTERM graceful-shutdown for the daemon runtime (the one `unsafe` block, main.rs) ---
+libc = "0.2"
+# --- Real SMTP-over-TLS sockets (spec §7.3 STARTTLS) ---
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2"
+webpki-roots = "0.26"
+# --- UTS-46/IDNA A-label (punycode) for outbound IDN destinations ---
+idna = "1"
+# --- Public Suffix List for RFC 7489 §3.2 DMARC organizational-domain determination ---
+psl = "2.1.219"
+
+[dev-dependencies]
+# Self-signed cert generation for the in-process loopback TLS tests only.
+rcgen = "0.13"
+
+# NOTE: this crate deliberately does NOT set `[lints] workspace = true` — the workspace forbids
+# `unsafe_code`, but the daemon's SIGINT/SIGTERM handler (src/main.rs) needs one `unsafe { libc::… }`
+# block. The gateway keeps its own lint posture; every other Wakala crate stays forbid-unsafe.
+
+[lib]
+name = "gateway"
+path = "src/lib.rs"
+
+[[bin]]
+name = "wakala-gateway"
+path = "src/main.rs"

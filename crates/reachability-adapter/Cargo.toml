@@ -1,0 +1,18 @@
+[package]
+name = "reachability-adapter"
+description = "The REACH reachability-adapter: content-blind (SNI-passthrough) public reach for arbitrary box services (profiles/reachability.md)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+broker-economics = { path = "../broker-economics" }
+broker-conformance = { path = "../broker-conformance" }
+# Transport deps (tokio, tokio-rustls for the SNI ClientHello peek, yamux for the
+# reverse-tunnel mux) are added when the REACH-1 transport (src/sni.rs, src/tunnel.rs)
+# is implemented — the pure-transport port needs no substrate types and is unblocked.

@@ -1,0 +1,16 @@
+[package]
+name = "broker-economics"
+description = "KOTVA coordinator content-visibility model, authz, tariff, and usage-receipt types (CONTRACT §2–§6)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# No substrate dependency yet. The signed descriptor / tariff / receipt bytes ride
+# kotva-core (identity, signing, DS-tags, deterministic CBOR); until that crate is
+# carved + tagged those live behind the `kotva_core` seam module as stubs.
