@@ -22,11 +22,9 @@ use thiserror::Error;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 
+use crate::auth::{authenticate_box_connection, AuthError, NonceRegistry};
 use crate::sni::{peek_client_hello, SniError};
-use crate::tunnel::{
-    read_registration, Registration, RegistrationGuard, RegistryError, TunnelError, TunnelHandle,
-    TunnelRegistry,
-};
+use crate::tunnel::{RegistrationGuard, RegistryError, TunnelError, TunnelHandle, TunnelRegistry};
 
 #[derive(Debug, Error)]
 pub enum IngressError {
@@ -42,6 +40,11 @@ pub enum IngressError {
 
 #[derive(Debug, Error)]
 pub enum TunnelAcceptError {
+    /// REACH-2 key-authentication failed (malformed frame, unknown/replayed nonce, or a
+    /// signature that did not verify against the claimed IK) — fail closed, never proceed to
+    /// yamux or the registry (`crate::auth` module docs carry the full disclosure).
+    #[error(transparent)]
+    Auth(#[from] AuthError),
     #[error(transparent)]
     Tunnel(#[from] TunnelError),
     #[error(transparent)]
@@ -51,11 +54,15 @@ pub enum TunnelAcceptError {
 /// The reachability-adapter's transport core: composes the control listener
 /// (box registrations) and the public ingress listener (SNI-passthrough
 /// forwarding) over one shared [`TunnelRegistry`]. `Clone` is cheap (the
-/// registry is `Arc`-backed) so a handle can be freely passed into spawned
-/// per-connection tasks.
+/// registry and nonce registry are both `Arc`-backed) so a handle can be
+/// freely passed into spawned per-connection tasks.
 #[derive(Clone, Default)]
 pub struct AdapterServer {
     registry: TunnelRegistry,
+    /// REACH-2 challenge nonces in flight across every control connection this server has
+    /// accepted — shared, not per-connection, so single-use/replay-inertness (`crate::auth`)
+    /// holds across the whole listener, not just within one handshake.
+    nonces: NonceRegistry,
 }
 
 impl AdapterServer {
@@ -91,16 +98,21 @@ impl AdapterServer {
         }
     }
 
-    /// Handle one already-accepted box control connection: read its
-    /// [`Registration`] frame (REACH-2 TODO: currently unauthenticated, see
-    /// `tunnel.rs` module docs), spawn the yamux driver, and register the
-    /// tunnel. Registration is single-writer per name (REACH-7 discipline
-    /// applied to the in-memory session table) — a name already held by a
-    /// live tunnel is refused, not hijacked.
+    /// Handle one already-accepted box control connection: run the REACH-2
+    /// challenge-response key-auth handshake ([`crate::auth::authenticate_box_connection`]) —
+    /// failing closed on any malformed frame, replayed nonce, or bad signature, per
+    /// `crate::auth`'s disclosed residual (key-auth only, no transport encryption on this leg)
+    /// — then spawn the yamux driver and register the tunnel bound to the now-authenticated `IK`.
+    /// Registration is single-writer per `(name, owning IK)` (REACH-7 discipline applied to the
+    /// in-memory session table) — a name already held by a *different* IK's live tunnel is
+    /// refused, never hijacked; the same IK re-registering (a refresh) is honored.
     pub async fn accept_box_connection(&self, mut socket: TcpStream) -> Result<(), TunnelAcceptError> {
-        let registration: Registration = read_registration(&mut socket).await?;
+        let authed = authenticate_box_connection(&mut socket, &self.nonces).await?;
         let (handle, driver_join) = TunnelHandle::spawn(socket);
-        let guard: RegistrationGuard = self.registry.register(&registration, handle).await?;
+        let guard: RegistrationGuard = self
+            .registry
+            .register(&authed.registration, &authed.authenticated_ik, handle)
+            .await?;
         // Deregister automatically once the tunnel's driver task ends (box
         // disconnect, I/O error, or every TunnelHandle clone dropped) — the
         // registration is rebuildable adapter operational state (REACH
@@ -235,10 +247,16 @@ async fn fail_closed(socket: TcpStream) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tunnel::write_registration;
+    use crate::auth::authenticate_as_box;
+    use crate::tunnel::Registration;
+    use kotva_core::identity::IdentityKey;
     use std::time::Duration;
     use tokio::io::AsyncReadExt;
 
+    /// Spawn a fake box that accepts one control connection, runs the REACH-2 key-auth
+    /// handshake for `name`/`service` under a freshly-generated real `IdentityKey`, then drives
+    /// the post-auth yamux session as the box side (server), echoing bytes verbatim so ingress
+    /// tests can assert byte-identical passthrough end to end.
     async fn spawn_fake_box(
         control_listener: TcpListener,
         name: &str,
@@ -250,15 +268,12 @@ mod tests {
             let (mut ctrl, _) = control_listener.accept().await.unwrap();
             let mut services = HashSet::new();
             services.insert(service);
-            write_registration(
-                &mut ctrl,
-                &Registration {
-                    name,
-                    allowed_services: services,
-                },
-            )
-            .await
-            .unwrap();
+            let ik = IdentityKey::generate();
+            let registration = Registration {
+                name,
+                allowed_services: services,
+            };
+            authenticate_as_box(&mut ctrl, &ik, &registration).await.unwrap();
 
             // From here the control socket carries the yamux session; the box
             // is the yamux **server** side (accepts streams the adapter
@@ -399,6 +414,42 @@ mod tests {
         assert!(matches!(result, Err(IngressError::ServiceNotAllowed { .. })));
 
         assert_forwarded_nothing(&mut client).await;
+    }
+
+    #[tokio::test]
+    async fn a_box_with_a_different_identity_cannot_hijack_a_registered_name() {
+        let server = AdapterServer::new();
+        let name = "svc.alice.reach.example";
+
+        // The legitimate box registers first.
+        let control_listener1 = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let control_addr1 = control_listener1.local_addr().unwrap();
+        let _box1 = spawn_fake_box(control_listener1, name, "https").await;
+        let control_client1 = TcpStream::connect(control_addr1).await.unwrap();
+        server.accept_box_connection(control_client1).await.unwrap();
+        wait_until_registered(&server, name).await;
+
+        // A SECOND box, with its own (different) identity, authenticates successfully in its
+        // own right (its signature over its own claimed IK is perfectly valid) but then tries to
+        // claim the SAME name the first box already owns — REACH-7-style, this must be refused
+        // at the registry, not silently hand the name over.
+        let control_listener2 = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let control_addr2 = control_listener2.local_addr().unwrap();
+        let _box2 = spawn_fake_box(control_listener2, name, "https").await;
+        let control_client2 = TcpStream::connect(control_addr2).await.unwrap();
+        let err = server.accept_box_connection(control_client2).await.unwrap_err();
+        let matches_expected = matches!(
+            &err,
+            TunnelAcceptError::Registry(RegistryError::OwnedByDifferentIdentity(n)) if n == name
+        );
+        assert!(
+            matches_expected,
+            "a second, differently-keyed box must not be able to take over an already-registered name: {err}"
+        );
+
+        // The original registration must be completely unaffected by the failed hijack attempt.
+        let lookup = server.registry().lookup(name).await;
+        assert!(lookup.is_some(), "the incumbent registration must survive an attempted hijack");
     }
 
     /// Assert a fail-closed connection forwarded zero application bytes. A

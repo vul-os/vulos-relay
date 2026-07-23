@@ -14,24 +14,34 @@
 //! ClientHello's SNI (`crate::sni`). Every byte placed on a tunnel stream is
 //! ciphertext the adapter forwards, not HTTP it parses and re-emits.
 //!
-//! ## REACH-2 status — TODO, tracked honestly
+//! ## REACH-2 status — key-auth closed, transport security still open
 //!
-//! REACH-2 mandates the box↔adapter leg be mutually authenticated to the box's
-//! `IK` via DMTAP-Auth over a libp2p Noise-secured transport. That requires
-//! `kotva-core` identity types, which are not yet pinned in this workspace
-//! (`lib.rs` module table, HANDOVER §Guardrails-1). **This first cut accepts a
-//! plain TCP control connection with no cryptographic authentication of the
-//! box's identity at all** — any TCP client that completes the tiny
-//! [`Registration`] handshake below can register a name. This is a real,
-//! unfixed gap versus REACH-2, not a partial mitigation; it MUST be closed
-//! before this crate is used against a public listener. Tracked for the
-//! `auth` module in `lib.rs`'s module-plan table.
+//! REACH-2 mandates the box↔adapter leg be mutually authenticated to the
+//! box's `IK` over a libp2p Noise-secured transport. As of `src/auth.rs`
+//! (`kotva-core` is now tag-pinned in this workspace) the **key-authentication**
+//! half is closed: [`crate::ingress::AdapterServer::accept_box_connection`]
+//! runs the REACH-2 challenge-response handshake ([`crate::auth::authenticate_box_connection`])
+//! before any [`Registration`] is honored, and [`TunnelRegistry::register`]
+//! below binds the name to the *authenticated* `IK` it returns, never the
+//! bare claim. A box that cannot sign the adapter's nonce under the `IK` it
+//! claims is rejected before its yamux session ever starts (fail closed,
+//! REACH-6).
 //!
-//! Similarly, REACH-5's allow-list is carried today as free-form strings
-//! declared by the box in its own [`Registration`] frame with no independent
-//! verification — a box can currently declare whatever it likes. Real
-//! enforcement (the adapter refusing to honor a service claim it cannot trust)
-//! also waits on the `auth` seam.
+//! **Still open, stated plainly (see `crate::auth` module docs for the full
+//! disclosure):** the control connection carrying that handshake — and the
+//! yamux session after it — is still **plain, unencrypted TCP**. Key-auth
+//! proves *who* is on the other end; it does not make the channel itself
+//! confidential or tamper-evident. The libp2p Noise transport-security layer
+//! REACH-2 also calls for is not implemented by this crate. Do not point
+//! this control listener at a network an on-path attacker can observe
+//! without accepting that residual (which does not include impersonation —
+//! only observation/DoS of the control leg — see `crate::auth`).
+//!
+//! REACH-5's allow-list is now carried inside the *authenticated*
+//! [`Registration`] (the adapter knows which `IK` declared it), but its
+//! contents remain a free-form, self-declared string set with no independent
+//! verification beyond "the box that holds this `IK` said so" — the adapter
+//! still does not check the declared services against anything external.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -271,32 +281,57 @@ async fn drive(
 
 #[derive(Debug, Error)]
 pub enum RegistryError {
-    #[error("name {0:?} is already registered to a live tunnel")]
-    AlreadyRegistered(String),
+    /// `name` is already registered to a live tunnel owned by a **different** authenticated
+    /// `IK` — refused outright, never silently replaced (REACH-7-style single-writer, RESERVE).
+    /// This is the hijack case: a box that cannot prove it holds the incumbent's `IK` can never
+    /// take over its name, no matter how it phrases the request.
+    #[error("name {0:?} is already registered to a live tunnel owned by a different identity")]
+    OwnedByDifferentIdentity(String),
 }
 
 /// The adapter's registration map: SNI hostname → the box tunnel serving it,
-/// plus its declared service allow-list (REACH-5). Single-writer per name —
-/// registering an already-live name is refused outright rather than silently
-/// replacing the incumbent, so one box can never hijack another's name out
-/// from under it (RESERVE, REACH-7's single-writer discipline applied to the
-/// adapter's in-memory session table, the same shape as the Go relay's
-/// `registry.add`).
+/// its declared service allow-list (REACH-5), and the **authenticated** `IK`
+/// that owns the name (REACH-2). Single-writer *per (name, owning IK)*: a
+/// different `IK` can never hijack or overwrite a name another `IK` holds
+/// ([`RegistryError::OwnedByDifferentIdentity`]), but the **same** `IK`
+/// re-registering (a reconnect/refresh after a network blip) is honored —
+/// it has just re-proven possession of that exact key via a fresh REACH-2
+/// handshake (`crate::auth`), so this is the legitimate owner reclaiming its
+/// own name, not a hijack. This is RESERVE / REACH-7's single-writer
+/// discipline applied to the adapter's in-memory session table, extended
+/// from "per name" to "per name, bound to the identity that proved it".
 #[derive(Clone, Default)]
 pub struct TunnelRegistry {
-    inner: Arc<Mutex<HashMap<String, RegisteredTunnel>>>,
+    inner: Arc<Mutex<RegistryState>>,
 }
 
-#[derive(Clone)]
+#[derive(Default)]
+struct RegistryState {
+    tunnels: HashMap<String, RegisteredTunnel>,
+    /// Monotonic counter, one value handed out per successful `register()` call. Lets
+    /// [`RegistrationGuard::drop`] tell "the registration I own is still the live one" apart
+    /// from "a same-IK refresh has since replaced it" — without this, a stale guard's
+    /// best-effort cleanup could delete a newer, live registration out from under it (see
+    /// `deregister` below).
+    next_generation: u64,
+}
+
 struct RegisteredTunnel {
     handle: TunnelHandle,
     allowed_services: HashSet<String>,
+    /// The authenticated owner (REACH-2) — raw Ed25519 public key bytes, the same
+    /// representation `kotva_core::identity::IdentityKey::public()` returns.
+    owner_ik: Vec<u8>,
+    generation: u64,
 }
 
 /// A registered tunnel as seen by a lookup: the handle to open streams on,
 /// plus the service allow-list the ingress path must check before forwarding
 /// (REACH-5 — the adapter never chooses the backend, it only forwards onto a
-/// tunnel the box already declared for a specific service).
+/// tunnel the box already declared for a specific service). The owning `IK`
+/// is deliberately not exposed here: the public ingress path authorizes on
+/// name + service only (REACH-2 "authorize, never classify"), it has no use
+/// for — and should never need — the identity behind a name it is routing.
 #[derive(Clone)]
 pub struct TunnelLookup {
     pub handle: TunnelHandle,
@@ -308,30 +343,41 @@ impl TunnelRegistry {
         Self::default()
     }
 
-    /// Register a freshly-spawned tunnel for `registration.name`. Fails if the
-    /// name already has a live tunnel — no hijacking, single-writer per name.
-    /// Returns a guard whose drop deregisters the name; callers should hold it
-    /// for the tunnel's lifetime (e.g. alongside the task driving its control
-    /// connection).
+    /// Register a freshly-spawned tunnel for `registration.name`, owned by the **authenticated**
+    /// `owner_ik` (the `authenticated_ik` a successful `crate::auth::authenticate_box_connection`
+    /// returned — never a bare, unverified claim). Fails with
+    /// [`RegistryError::OwnedByDifferentIdentity`] if the name already has a live tunnel owned by
+    /// a *different* `IK`; succeeds (replacing the entry) if it is owned by the *same* `IK` — a
+    /// same-identity refresh, not a hijack. Returns a guard whose drop deregisters the name
+    /// (unless a newer registration has since taken over, see `deregister`); callers should hold
+    /// it for the tunnel's lifetime (e.g. alongside the task driving its control connection).
     pub async fn register(
         &self,
         registration: &Registration,
+        owner_ik: &[u8],
         handle: TunnelHandle,
     ) -> Result<RegistrationGuard, RegistryError> {
-        let mut map = self.inner.lock().await;
-        if map.contains_key(&registration.name) {
-            return Err(RegistryError::AlreadyRegistered(registration.name.clone()));
+        let mut state = self.inner.lock().await;
+        if let Some(existing) = state.tunnels.get(&registration.name) {
+            if existing.owner_ik != owner_ik {
+                return Err(RegistryError::OwnedByDifferentIdentity(registration.name.clone()));
+            }
         }
-        map.insert(
+        let generation = state.next_generation;
+        state.next_generation += 1;
+        state.tunnels.insert(
             registration.name.clone(),
             RegisteredTunnel {
                 handle,
                 allowed_services: registration.allowed_services.clone(),
+                owner_ik: owner_ik.to_vec(),
+                generation,
             },
         );
         Ok(RegistrationGuard {
             registry: self.clone(),
             name: registration.name.clone(),
+            generation,
         })
     }
 
@@ -339,27 +385,40 @@ impl TunnelRegistry {
     /// (DNS names are), matching the normalization a real zone lookup would
     /// need to do.
     pub async fn lookup(&self, sni_name: &str) -> Option<TunnelLookup> {
-        let map = self.inner.lock().await;
+        let state = self.inner.lock().await;
         let key = sni_name.to_ascii_lowercase();
-        map.get(&key).map(|t| TunnelLookup {
+        state.tunnels.get(&key).map(|t| TunnelLookup {
             handle: t.handle.clone(),
             allowed_services: t.allowed_services.clone(),
         })
     }
 
-    async fn deregister(&self, name: &str) {
-        self.inner.lock().await.remove(name);
+    /// Remove `name`'s registration, but only if it is still the exact registration this guard
+    /// was issued for (`generation` matches). A same-`IK` refresh bumps the generation on its way
+    /// in (`register` above), so the *old* connection's eventual cleanup here becomes a safe
+    /// no-op instead of deleting the *new*, live registration it would otherwise collide with.
+    async fn deregister(&self, name: &str, generation: u64) {
+        let mut state = self.inner.lock().await;
+        if let Some(existing) = state.tunnels.get(name) {
+            if existing.generation == generation {
+                state.tunnels.remove(name);
+            }
+        }
     }
 }
 
-/// Holding this keeps `name` registered; dropping it removes the registration.
-/// Deregistration on drop runs on a spawned task since `Drop` cannot be async —
-/// acceptable here because the removal is a best-effort cleanup of in-memory,
-/// rebuildable state (REACH profile §6: "subdomain registration is rebuildable
-/// adapter operational state"), not a durable write.
+/// Holding this keeps `name` registered; dropping it removes the registration
+/// — unless a same-`IK` refresh has since re-registered the name (a newer
+/// `generation`), in which case the drop is a safe no-op (see
+/// [`TunnelRegistry::deregister`]). Deregistration on drop runs on a spawned
+/// task since `Drop` cannot be async — acceptable here because the removal is
+/// a best-effort cleanup of in-memory, rebuildable state (REACH profile §6:
+/// "subdomain registration is rebuildable adapter operational state"), not a
+/// durable write.
 pub struct RegistrationGuard {
     registry: TunnelRegistry,
     name: String,
+    generation: u64,
 }
 
 impl std::fmt::Debug for RegistrationGuard {
@@ -372,8 +431,9 @@ impl Drop for RegistrationGuard {
     fn drop(&mut self) {
         let registry = self.registry.clone();
         let name = std::mem::take(&mut self.name);
+        let generation = self.generation;
         tokio::spawn(async move {
-            registry.deregister(&name).await;
+            registry.deregister(&name, generation).await;
         });
     }
 }
@@ -382,6 +442,20 @@ impl Drop for RegistrationGuard {
 mod tests {
     use super::*;
     use tokio::net::TcpListener;
+
+    /// A live `TunnelHandle` backed by a real (throwaway) socket pair — `TunnelHandle::spawn`
+    /// needs a real `TcpStream`, but these registry tests only care about registration bookkeeping,
+    /// not the tunnel actually carrying traffic.
+    async fn dummy_handle() -> TunnelHandle {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accept = tokio::spawn(async move { listener.accept().await.unwrap().0 });
+        let client_sock = TcpStream::connect(addr).await.unwrap();
+        let server_sock = accept.await.unwrap();
+        let (handle, _join) = TunnelHandle::spawn(server_sock);
+        drop(client_sock);
+        handle
+    }
 
     #[tokio::test]
     async fn registration_round_trips_over_a_real_socket() {
@@ -417,46 +491,94 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn registry_refuses_a_second_writer_for_the_same_name() {
+    async fn different_ik_cannot_hijack_a_name_registered_to_another_ik() {
         let registry = TunnelRegistry::new();
-
-        // register() only needs a TunnelHandle, which needs a real TcpStream to
-        // spawn on.
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let accept = tokio::spawn(async move { listener.accept().await.unwrap().0 });
-        let client_sock = TcpStream::connect(addr).await.unwrap();
-        let server_sock = accept.await.unwrap();
-        let (handle1, _join) = TunnelHandle::spawn(server_sock);
-        drop(client_sock);
+        let owner_a = vec![0xAA; 32];
+        let owner_b = vec![0xBB; 32];
 
         let reg = Registration {
             name: "dup.example".to_string(),
             allowed_services: HashSet::new(),
         };
-        let _guard = registry.register(&reg, handle1.clone()).await.unwrap();
+        let _guard = registry
+            .register(&reg, &owner_a, dummy_handle().await)
+            .await
+            .unwrap();
 
-        let err = registry.register(&reg, handle1).await.unwrap_err();
-        assert!(matches!(err, RegistryError::AlreadyRegistered(name) if name == "dup.example"));
+        // A DIFFERENT authenticated identity trying to claim the same name — REACH-7-style
+        // no-hijack, this MUST be refused, not silently replace the incumbent.
+        let err = registry
+            .register(&reg, &owner_b, dummy_handle().await)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, RegistryError::OwnedByDifferentIdentity(name) if name == "dup.example"));
+    }
+
+    #[tokio::test]
+    async fn same_ik_can_refresh_its_own_registration() {
+        let registry = TunnelRegistry::new();
+        let owner = vec![0xCC; 32];
+
+        let reg = Registration {
+            name: "refresh.example".to_string(),
+            allowed_services: HashSet::new(),
+        };
+        let _guard1 = registry
+            .register(&reg, &owner, dummy_handle().await)
+            .await
+            .unwrap();
+
+        // The SAME authenticated identity re-registering (a reconnect/refresh) is not a hijack
+        // and MUST succeed — REACH-2 requires re-registration to re-authenticate to the same IK,
+        // which this simulates by presenting the identical `owner` bytes.
+        let _guard2 = registry
+            .register(&reg, &owner, dummy_handle().await)
+            .await
+            .expect("a same-IK refresh must be permitted, not treated as a hijack");
+        assert!(registry.lookup("refresh.example").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn stale_guard_from_a_superseded_registration_does_not_evict_the_refresh() {
+        let registry = TunnelRegistry::new();
+        let owner = vec![0xDD; 32];
+
+        let reg = Registration {
+            name: "stale.example".to_string(),
+            allowed_services: HashSet::new(),
+        };
+        let guard1 = registry
+            .register(&reg, &owner, dummy_handle().await)
+            .await
+            .unwrap();
+        let _guard2 = registry
+            .register(&reg, &owner, dummy_handle().await)
+            .await
+            .unwrap();
+
+        // Drop the FIRST (now-superseded) guard. Its best-effort cleanup must recognize a newer
+        // generation has since taken the name over and must NOT delete the live registration.
+        drop(guard1);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            registry.lookup("stale.example").await.is_some(),
+            "a stale guard's drop must not evict a newer same-IK refresh"
+        );
     }
 
     #[tokio::test]
     async fn deregistering_frees_the_name_for_reuse() {
         let registry = TunnelRegistry::new();
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let accept = tokio::spawn(async move { listener.accept().await.unwrap().0 });
-        let client_sock = TcpStream::connect(addr).await.unwrap();
-        let server_sock = accept.await.unwrap();
-        let (handle, _join) = TunnelHandle::spawn(server_sock);
-        drop(client_sock);
+        let owner = vec![0xEE; 32];
 
         let reg = Registration {
             name: "reuse.example".to_string(),
             allowed_services: HashSet::new(),
         };
-        let guard = registry.register(&reg, handle.clone()).await.unwrap();
+        let guard = registry
+            .register(&reg, &owner, dummy_handle().await)
+            .await
+            .unwrap();
         assert!(registry.lookup("reuse.example").await.is_some());
         drop(guard);
 
@@ -469,8 +591,12 @@ mod tests {
         }
         assert!(registry.lookup("reuse.example").await.is_none());
 
-        // The name can now be claimed again.
-        let _guard2 = registry.register(&reg, handle).await.unwrap();
+        // The name can now be claimed again, including by a different identity — it is free.
+        let other_owner = vec![0xFF; 32];
+        let _guard2 = registry
+            .register(&reg, &other_owner, dummy_handle().await)
+            .await
+            .unwrap();
         assert!(registry.lookup("reuse.example").await.is_some());
     }
 }

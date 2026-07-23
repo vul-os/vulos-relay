@@ -23,27 +23,41 @@
 //! | `sni`     | Peek the TLS ClientHello SNI without terminating; demux (REACH-1). | no — unblocked | **done** (W4) |
 //! | `tunnel`  | The box↔adapter reverse tunnel (yamux); adapter opens one stream per inbound conn (REACH profile §2). | no — unblocked | **done** (W4), transport-level only |
 //! | `ingress` | The public :443 listener + fail-closed routing (REACH-1/-5/-6). | no — unblocked | **done** (W4) |
+//! | `auth`   | Mutual **key-auth** of the tunnel to the box `IK` (DMTAP-Auth-shaped challenge-response, REACH-2). | yes — kotva-core | **done** (W4b), key-auth only — see residual below |
 //! | `zone`   | Single-writer subdomain namespace + `LocationRecord` hints (REACH-3/-7, RESERVE). | partly — needs kotva-core naming | not started |
-//! | `auth`   | Mutual key-auth of the tunnel to the box `IK` (DMTAP-Auth, REACH-2). | yes — kotva-core | not started |
 //! | `descriptor` | Signed discovery-only adapter descriptor + tariff + receipts (REACH-11). | yes — kotva-core | not started |
 //!
 //! The `sni` + `tunnel` + `ingress` transport core is pure plumbing and was built
 //! first (W4), ahead of the substrate. `kotva-core` is now tag-pinned in the
-//! workspace (`core-v0.2.0`, W3) and this crate already uses its real identity
-//! type for descriptor construction below — but the `auth` (REACH-2 mutual
-//! key-auth of the tunnel) and `zone`/`descriptor` modules themselves are still
-//! not started; that build-out is separate future work, not this wave's scope.
+//! workspace (`core-v0.2.0`, W3); `auth` (W4b) uses its real `IdentityKey` /
+//! `verify_domain` to close REACH-2's key-authentication half. `zone`/`descriptor`
+//! are still not started; that build-out is separate future work.
 //!
-//! **REACH-2 gap, disclosed plainly:** the box↔adapter control connection
-//! implemented in `tunnel::read_registration`/[`TunnelHandle::spawn`] is a
-//! **plain, unauthenticated TCP connection** — any TCP client that speaks the
-//! tiny registration frame can currently claim a name. REACH-2 requires this
-//! leg to be mutually authenticated to the box's `IK` (DMTAP-Auth over a
-//! libp2p Noise-secured transport); `kotva-core` identity types are pinned in
-//! this workspace now (W3), so this is no longer blocked on the substrate, but
-//! the auth wiring itself is not yet built — tracked as the future `auth`
-//! module above, not silently assumed. Do not point this control listener at a
-//! public network until that lands.
+//! **REACH-2 status — key-auth closed, transport security still open (disclosed
+//! plainly, see `auth` module docs for the full statement):** the box↔adapter
+//! control connection now runs a challenge-response handshake
+//! ([`auth::authenticate_box_connection`]) before [`ingress::AdapterServer::accept_box_connection`]
+//! will spawn a tunnel or touch the registry — the box must sign a fresh,
+//! single-use, adapter-issued nonce (bound to its claimed name) under the `IK`
+//! it claims, verified via `kotva_core::identity::verify_domain`; a wrong-key
+//! signature, a replayed nonce, or a malformed frame all fail closed
+//! (REACH-6), and [`tunnel::TunnelRegistry`] now binds a name to the
+//! *authenticated* `IK` that registered it — a different `IK` can never
+//! hijack or overwrite it (REACH-7-style, extended from "per name" to "per
+//! name, bound to the identity that proved it"). **What remains open:** the
+//! control connection carrying that handshake, and the yamux session after
+//! it, is still **plain, unencrypted TCP** — REACH-2's further requirement
+//! that this leg run over a **libp2p Noise-secured transport** is not
+//! implemented. An on-path attacker can observe or tamper with/drop control
+//! frames (denial of service on that connection attempt); it **cannot**
+//! forge a box's identity or hijack a name, because that requires a valid
+//! Ed25519 signature under a key it does not hold. Do not present this crate
+//! as "fully REACH-2 compliant" on that basis — key-authentication is closed,
+//! transport confidentiality/integrity of the control leg is not. This crate
+//! is materially more public-safe than the plain-TCP W4 cut (name
+//! registration can no longer be claimed by any TCP client that merely
+//! speaks the frame format), but is still not the profile's full target
+//! posture until Noise lands on this leg.
 //!
 //! ## Fail-closed posture (REACH-6)
 //!
@@ -58,10 +72,12 @@ use broker_economics::descriptor::Descriptor;
 use broker_economics::kinds::CoordinatorKind;
 use broker_economics::visibility::{AssuranceLevel, ContentVisibility, VisibilityClass};
 
+pub mod auth;
 pub mod ingress;
 pub mod sni;
 pub mod tunnel;
 
+pub use auth::{AuthError, AuthenticatedRegistration, NonceRegistry};
 pub use ingress::{AdapterServer, IngressError, TunnelAcceptError};
 pub use tunnel::{RegistryError, TunnelError, TunnelHandle, TunnelRegistry};
 

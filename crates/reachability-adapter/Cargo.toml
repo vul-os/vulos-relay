@@ -13,6 +13,13 @@ workspace = true
 [dependencies]
 broker-economics = { path = "../broker-economics" }
 broker-conformance = { path = "../broker-conformance" }
+# --- REACH-2 (src/auth.rs): mutual key-authentication of the box<->adapter control
+# connection to the box's real Ed25519 IK. Tag-pinned (the isango guardrail: never
+# HEAD, never a moving path dep) — same tag broker-economics/gateway already pin.
+kotva-core = { git = "https://github.com/vul-os/kotva", tag = "core-v0.2.0" }
+# --- CSPRNG for the REACH-2 challenge nonce (src/auth.rs) — OS RNG, not a PRNG seeded
+# from anything predictable. Same crate/version gateway already uses for this role. ---
+getrandom = "0.2"
 # --- REACH-1 transport (src/sni.rs, src/tunnel.rs, src/ingress.rs): pure plumbing,
 # no substrate types needed, so this leg is unblocked ahead of kotva-core. ---
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
@@ -20,7 +27,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macro
 # long-term bindings target libp2p Noise + yamux; this crate uses the same yamux
 # wire framing library the mesh's own libp2p-yamux binding is built on, so the
 # in-process mux behavior matches even before the Noise transport-security layer
-# is wired (see src/tunnel.rs doc comment / REACH-2 TODO).
+# is wired. src/auth.rs now closes the *key-authentication* half of REACH-2 (the
+# box proves possession of its claimed IK); the Noise transport-security layer
+# for this leg is still not wired — see src/auth.rs module docs for the residual.
 yamux = "0.13"
 # Bridges tokio's AsyncRead/AsyncWrite (TcpStream) and futures-io's
 # AsyncRead/AsyncWrite (what the `yamux` crate's Connection/Stream use) so a
