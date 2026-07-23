@@ -73,6 +73,73 @@ key numbering, the text-vs-integer choice for `kind`/`visibility.class`/`visibil
 (chose text for readability/extensibility over kotva-core's usual small-int discriminants), or
 the per-object self-certification should change — nothing is wire-frozen yet outside this repo.
 
+[2026-07-23 sense-check] **Fresh independent deep-research sense-check of the spec (CONTRACT,
+DIRECTION, THREAT-MODEL, reachability/media/rtc profiles, bindings, docs/research, substrate/,
+§01/§02/§18 skim). Verdict: sound and well-grounded — one real, fixable contradiction found; rest
+holds up under skeptical pressure.**
+
+**1. HIGH — §6 (privacy) and §4.4 (mixnet) make a headline claim THREAT-MODEL.md explicitly
+forbids, and neither doc cross-references the other.** `06-privacy.md` §6.1/§6.2/§6.5 states
+DMTAP-mail's **"headline guarantee is strong metadata privacy against a global *passive*
+adversary,"** and the `private`-tier table marks graph privacy **"strong (global passive)."**
+`04-transport.md` §6 calls the Sphinx/Loopix mixnet **"normative and fully specified."** But
+`THREAT-MODEL.md` SEC-9 says the opposite of the *same* property: **"Strong metadata privacy
+against a global passive adversary (mixnet / onion routing / cover traffic) is research-tier and
+non-normative in the KOTVA family... quarantined to research/... A profile MUST NOT claim
+graph/timing privacy it does not implement,"** and `DIRECTION.md` §9 lists "mixnet" itself as the
+example of unproven/unsound far-future cryptography that belongs in `research/`. `SPEC.md`
+(§"Security floor, stated once and inherited") positions THREAT-MODEL as the checklist "every
+capability... is an instance of," so by the family's own governance this is a conformance
+conflict, not just loose prose. `04-transport.md` §4.4.11 ("Honest low-adoption model") already
+partially self-corrects — it admits the early fleet is "closer to Tor-with-few-relays" and says
+clients "MUST NOT present the `private` tier as 'anonymous' in absolute terms" — but that hedge
+never made it back into §6.1/§6.5's unqualified "headline guarantee" wording, and neither §4 nor
+§6 was reconciled with THREAT-MODEL when it was added. **This is load-bearing, not cosmetic**:
+`crates/kotva-core/src/{mixnet,sphinx}.rs` (tag `core-v0.2.0`, the crate Wakala is pinned to)
+really implements Sphinx/Loopix wire bytes per §4.4/§18.5. Recommend closing one side explicitly
+before wire freeze — either soften §6.1/§6.2/§6.5's absolute language to match §4.4.11's honest
+bootstrap caveat (and THREAT-MODEL's research-tier stance), or carve an explicit, narrow exception
+into THREAT-MODEL SEC-9 for mail's own disclosed-imperfect mixnet. Doesn't block Wakala's current
+unblocked-path work (broker-economics, REACH transport) since neither touches this claim.
+
+**2. MED — confirmed still-open, self-disclosed wire debt: `GatewayAuthz` per-address/per-rail
+grant type.** `07-gateway.md:869` and `26-legacy-adapters.md:421-422` both flag a new grant type
+on `GatewayAuthz` (§12.2) as **"planned... not yet defined on wire"** while being referenced
+normatively nearby — a direct instance of the gap DIRECTION §9's own "pay wire debt before prose"
+rule warns against. Not hidden (both sites say "planned"), and the *existing* GatewayAuthz
+mechanics (open/key-registered, fail-**safe**-not-fail-open, §12.2) are fully specified with CDDL
+today — only the newer per-rail/per-address extension is outstanding. Low risk to us now; worth
+the spec session closing before anything downstream cites the extended grant type as if it exists.
+
+**3. LOW / nuance — REACH-1a's `structural` assurance leans on a CA mandate that isn't in force
+yet.** Verified via web search: RFC 8657 (`accounturi`/`validationmethods` CAA) is cited and used
+correctly, but CA/Browser Forum Ballot SC098v2 only made CA processing of it **mandatory
+industry-wide from March 2027** (adopted May 2026) — after the spec's own 2026-07 snapshot date.
+Until then a CA that hasn't implemented RFC 8657 could still complete issuance under a
+CAA-permitted CA/method the `accounturi` record means to exclude, so REACH-1a's "structural"
+(provable) claim for an own-domain name is presently closer to "structural once the operator's CA
+supports RFC 8657" than universally structural today. One line of maturity disclosure would close
+this; not a defect in the RFC citation itself (which is accurate) or the mechanism design.
+
+**4. Confirms — grounding is real, not thin.** Spot-checked RFC citations (MLS 9420, HPKE 9180,
+SFrame 9605, CAA 8657/8659, ACME TLS-ALPN-01 8737) against primary sources: all accurate in number
+*and* in the specific property attributed to them (SFrame 9605's actual abstract matches
+CONTRACT §3.1's "SFU reads per-frame metadata to forward, payload stays sealed" claim almost
+verbatim). `bindings/README.md` and `docs/research/` maturity claims are honestly hedged, not
+oversold (x402 "demand still thin (~$28k/day real)," personhood "imperfect," Kleros "small/
+unproven at scale," TEE "new trust dependency... disclosed not trustless"). `profiles/
+reachability.md` §4/§7/§8 (REACH-1a, the CAA-vs-bare-CAA distinction) is the single best-argued
+section in scope — a model of the house style, correctly distinguishing what RFC 8657 buys from
+what bare RFC 8659 CAA doesn't. Coordinator-kind set, content-visibility × assurance matrix,
+DS-tag domain separation, and the SEC-5 recovery/no-single-device-rewrite machinery
+(`01-identity.md` `rotate_threshold`) all cross-check clean across CONTRACT/DIRECTION/
+THREAT-MODEL/reachability/media/rtc — no contradictions found beyond finding 1.
+
+**Overall: safe to keep building on.** Everything in scope except finding 1 is sound, honestly
+disclosed where it has a ceiling, and internally consistent. Finding 1 is a real inconsistency in
+the security floor's own headline claim and deserves the spec session's attention before wire
+freeze, but it doesn't block current Wakala work.
+
 ## Spec → Wakala  (answers · decisions · spec updates)
 
 <!-- The spec session appends here. Example:
