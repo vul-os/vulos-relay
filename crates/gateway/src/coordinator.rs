@@ -11,8 +11,9 @@
 use broker_conformance::{Coordinator, Gate, LockIn, Metering, SelfHost, Settlement};
 use broker_economics::descriptor::Descriptor;
 use broker_economics::kinds::CoordinatorKind;
-use broker_economics::kotva_core::{Cbor, IdentityKey};
 use broker_economics::visibility::{AssuranceLevel, ContentVisibility, VisibilityClass};
+use broker_economics::{Cbor, SignedDescriptor};
+use kotva_core::identity::IdentityKey;
 
 /// The gateway's coordinator-contract posture. Constructed from the running gateway's operator
 /// config; here it fixes the declared visibility and the four-clause posture that the COORD-1..8
@@ -27,14 +28,13 @@ pub struct GatewayCoordinator {
 impl GatewayCoordinator {
     /// A gateway declaring the mandatory `terminating` visibility (the legacy leg is plaintext).
     ///
-    /// `identity` is the gateway's own substrate IK (the domain-anchored attestation key, spec
-    /// §7.2a). It is carried as the [`broker_economics::kotva_core`] placeholder until
-    /// `broker-economics` adopts the real `kotva-core` identity type (the next wave now that the
-    /// substrate tag exists) — the declared *posture* below is already authoritative.
-    pub fn new(identity: IdentityKey, policy: Cbor, metered: bool) -> Self {
+    /// `identity` is the gateway's own real kotva-core substrate IK (the domain-anchored
+    /// attestation key, spec §7.2a); only its public half is embedded in the descriptor (§2.1) —
+    /// this constructor never takes ownership of / stores the private key.
+    pub fn new(identity: &IdentityKey, policy: Cbor, metered: bool) -> Self {
         Self {
             descriptor: Descriptor {
-                identity,
+                identity: identity.public(),
                 kind: CoordinatorKind::Gateway,
                 // Terminating, declared: the operator promises correct handling of plaintext it can
                 // structurally read — nothing makes this blind, and it is disclosed, never hidden.
@@ -47,6 +47,13 @@ impl GatewayCoordinator {
             },
             metered,
         }
+    }
+
+    /// Sign this gateway's descriptor with its real kotva-core identity (CONTRACT §2.1). `ik`
+    /// SHOULD be the same key `identity` was constructed with — see [`Descriptor::sign`]'s note
+    /// on self-certification.
+    pub fn sign(&self, ik: &IdentityKey) -> SignedDescriptor {
+        self.descriptor.sign(ik)
     }
 }
 
@@ -98,7 +105,16 @@ mod tests {
     use broker_conformance::check;
 
     fn gw(metered: bool) -> GatewayCoordinator {
-        GatewayCoordinator::new(IdentityKey([0x11; 32]), Cbor(Vec::new()), metered)
+        let ik = IdentityKey::from_seed(&[0x11; 32]);
+        GatewayCoordinator::new(&ik, Cbor(Vec::new()), metered)
+    }
+
+    #[test]
+    fn gateway_descriptor_signs_and_verifies_under_its_own_identity() {
+        let ik = IdentityKey::from_seed(&[0x22; 32]);
+        let g = GatewayCoordinator::new(&ik, Cbor(Vec::new()), false);
+        let signed = g.sign(&ik);
+        assert!(signed.verify().is_ok());
     }
 
     #[test]

@@ -13,15 +13,18 @@
 //! verified, and a [`Descriptor`] structurally cannot carry a global score, a price
 //! rank, or a stake field.
 //!
-//! Substrate-typed parts (signing, deterministic CBOR, the real descriptor bytes)
-//! ride [`kotva_core`], stubbed until that crate is carved + tagged
-//! (HANDOVER §Guardrails-1). No cryptography happens here yet.
+//! Substrate-typed parts — signing, deterministic CBOR, the real descriptor bytes —
+//! ride the tag-pinned `kotva-core` (`core-v0.2.0`, HANDOVER §Guardrails-1): see
+//! [`descriptor`] for the signing/verification API and the wire layout. This crate
+//! re-exports [`kotva_core::identity::IdentityKey`] at the top level as
+//! [`IdentityKey`] so consumers construct real identities without a separate
+//! `kotva-core` dependency of their own.
 
 pub mod descriptor;
 pub mod kinds;
-pub mod kotva_core;
 pub mod visibility;
 
-pub use descriptor::{Descriptor, Tariff, UsageReceipt};
+pub use descriptor::{Cbor, Descriptor, DescriptorError, SignedDescriptor, Tariff, UsageReceipt};
 pub use kinds::CoordinatorKind;
+pub use kotva_core::identity::IdentityKey;
 pub use visibility::{AssuranceLevel, ContentVisibility, VisibilityClass};

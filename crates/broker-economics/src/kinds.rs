@@ -92,6 +92,26 @@ impl CoordinatorKind {
         matches!(self, CoordinatorKind::CustodialEscrow)
     }
 
+    /// Parse the stable string id back into a kind (the inverse of [`Self::as_str`]), failing
+    /// closed (`None`) on any unknown value — used decoding a wire descriptor (`descriptor.rs`),
+    /// never guessing at an unrecognized kind string.
+    pub fn from_wire_str(s: &str) -> Option<Self> {
+        Some(match s {
+            "gateway" => CoordinatorKind::Gateway,
+            "relay" => CoordinatorKind::Relay,
+            "media-relay" => CoordinatorKind::MediaRelay,
+            "reachability-adapter" => CoordinatorKind::ReachabilityAdapter,
+            "indexer" => CoordinatorKind::Indexer,
+            "labeler" => CoordinatorKind::Labeler,
+            "matcher" => CoordinatorKind::Matcher,
+            "compute" => CoordinatorKind::Compute,
+            "arbiter" => CoordinatorKind::Arbiter,
+            "oracle" => CoordinatorKind::Oracle,
+            "custodial-escrow" => CoordinatorKind::CustodialEscrow,
+            _ => return None,
+        })
+    }
+
     /// Whether this kind belongs to the disclosed scarce-network-reachability
     /// class (CONTRACT §2.3, THREAT-MODEL R-6) — a resource an ISP/host allocates,
     /// not something a user can always self-provision. Two members: the `gateway`
@@ -108,6 +128,26 @@ impl CoordinatorKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn as_str_from_str_round_trips_every_kind() {
+        for k in [
+            CoordinatorKind::Gateway,
+            CoordinatorKind::Relay,
+            CoordinatorKind::MediaRelay,
+            CoordinatorKind::ReachabilityAdapter,
+            CoordinatorKind::Indexer,
+            CoordinatorKind::Labeler,
+            CoordinatorKind::Matcher,
+            CoordinatorKind::Compute,
+            CoordinatorKind::Arbiter,
+            CoordinatorKind::Oracle,
+            CoordinatorKind::CustodialEscrow,
+        ] {
+            assert_eq!(CoordinatorKind::from_wire_str(k.as_str()), Some(k));
+        }
+        assert_eq!(CoordinatorKind::from_wire_str("not-a-kind"), None);
+    }
 
     #[test]
     fn relay_is_structurally_blind() {

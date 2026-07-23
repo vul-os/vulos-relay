@@ -121,6 +121,10 @@ dependencies = [
 [[package]]
 name = "broker-economics"
 version = "0.0.0"
+dependencies = [
+ "kotva-core",
+ "thiserror",
+]
 
 [[package]]
 name = "bumpalo"

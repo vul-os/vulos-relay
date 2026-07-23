@@ -11,6 +11,8 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-# No substrate dependency yet. The signed descriptor / tariff / receipt bytes ride
-# kotva-core (identity, signing, DS-tags, deterministic CBOR); until that crate is
-# carved + tagged those live behind the `kotva_core` seam module as stubs.
+# Tag-pinned substrate (the isango guardrail: never HEAD, never a moving path dep).
+# Identity + Ed25519 signing/verification, DS-tag domain separation, canonical §18
+# deterministic CBOR — the descriptor/tariff/usage-receipt signing in `descriptor.rs`.
+kotva-core = { git = "https://github.com/vul-os/kotva", tag = "core-v0.2.0" }
+thiserror = "1"

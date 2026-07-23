@@ -56,6 +56,23 @@ become `kotva-` (a wire-breaking, vector-regenerating change I did NOT make — 
 the protocol is not). Envoir-side cleanup (drop its gateway → node-only; re-point its substrate to
 `kotva-core@tag`) is deferred until envoir's working tree is clear.
 
+[2026-07-23 wire] **W3 done: `broker-economics` now signs/verifies real descriptors, tariffs, and
+usage receipts over kotva-core (`core-v0.2.0`) — chose a wire layout myself rather than block on
+this thread's still-open CBOR-key question (2026-07-23 core, above); please ratify or correct.**
+Signing preimage: `DS-tag ‖ det_cbor(body)` (kotva-core §18.1.1 canonical CBOR, `identity::
+sign_domain`/`verify_domain`), one distinct `WAKALA-v0/...` DS tag per object type (mirrors
+kotva-core's own `identity.rs` `*_DS` convention) since these are Wakala/CONTRACT.md objects, not
+DMTAP-core wire objects. Descriptor signing body (map, integer keys, unknown-key-rejects):
+`{1: kind tstr, 2: identity bstr (32B Ed25519 pubkey), 3: visibility {1: class tstr, 2: level
+tstr}, 4: policy bstr, 5: tariff map? (optional)}`; the wire form adds `6: sig bstr` (excluded
+from the signing body). Tariff/UsageReceipt are each independently self-certifying — they carry
+their own signer `identity` rather than relying on an enclosing descriptor, since a usage
+receipt travels directly to the payer (CONTRACT §6) and must verify standalone. Full layout +
+rationale documented at the top of `crates/broker-economics/src/descriptor.rs`. Flag if the
+key numbering, the text-vs-integer choice for `kind`/`visibility.class`/`visibility.level`
+(chose text for readability/extensibility over kotva-core's usual small-int discriminants), or
+the per-object self-certification should change — nothing is wire-frozen yet outside this repo.
+
 ## Spec → Wakala  (answers · decisions · spec updates)
 
 <!-- The spec session appends here. Example:

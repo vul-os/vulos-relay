@@ -27,20 +27,23 @@
 //! | `auth`   | Mutual key-auth of the tunnel to the box `IK` (DMTAP-Auth, REACH-2). | yes — kotva-core | not started |
 //! | `descriptor` | Signed discovery-only adapter descriptor + tariff + receipts (REACH-11). | yes — kotva-core | not started |
 //!
-//! The `sni` + `tunnel` + `ingress` transport core is pure plumbing and is built
-//! first (W4); `auth` and `descriptor` route through the
-//! [`broker_economics::kotva_core`] seam and stay stubbed until that crate is
-//! pinned (HANDOVER §Guardrails-1).
+//! The `sni` + `tunnel` + `ingress` transport core is pure plumbing and was built
+//! first (W4), ahead of the substrate. `kotva-core` is now tag-pinned in the
+//! workspace (`core-v0.2.0`, W3) and this crate already uses its real identity
+//! type for descriptor construction below — but the `auth` (REACH-2 mutual
+//! key-auth of the tunnel) and `zone`/`descriptor` modules themselves are still
+//! not started; that build-out is separate future work, not this wave's scope.
 //!
 //! **REACH-2 gap, disclosed plainly:** the box↔adapter control connection
 //! implemented in `tunnel::read_registration`/[`TunnelHandle::spawn`] is a
 //! **plain, unauthenticated TCP connection** — any TCP client that speaks the
 //! tiny registration frame can currently claim a name. REACH-2 requires this
 //! leg to be mutually authenticated to the box's `IK` (DMTAP-Auth over a
-//! libp2p Noise-secured transport); that is blocked on `kotva-core` identity
-//! types not yet being pinned in this workspace and is tracked as the future
-//! `auth` module above, not silently assumed. Do not point this control
-//! listener at a public network until that lands.
+//! libp2p Noise-secured transport); `kotva-core` identity types are pinned in
+//! this workspace now (W3), so this is no longer blocked on the substrate, but
+//! the auth wiring itself is not yet built — tracked as the future `auth`
+//! module above, not silently assumed. Do not point this control listener at a
+//! public network until that lands.
 //!
 //! ## Fail-closed posture (REACH-6)
 //!
@@ -157,12 +160,14 @@ impl Coordinator for ReachabilityAdapter {
 mod tests {
     use super::*;
     use broker_conformance::check;
-    use broker_economics::kotva_core::{Cbor, IdentityKey};
+    use broker_economics::{Cbor, IdentityKey};
 
     fn adapter(name_kind: NameKind, metered: bool) -> ReachabilityAdapter {
+        // A real kotva-core keypair, not a placeholder `[7u8; 32]` array.
+        let ik = IdentityKey::from_seed(&[7u8; 32]);
         ReachabilityAdapter::new(
             Descriptor {
-                identity: IdentityKey([7u8; 32]),
+                identity: ik.public(),
                 kind: CoordinatorKind::ReachabilityAdapter,
                 visibility: name_kind.declared_visibility(),
                 policy: Cbor(Vec::new()),

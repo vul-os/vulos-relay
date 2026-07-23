@@ -261,8 +261,8 @@ fn coord4(v: ContentVisibility) -> Outcome {
 mod tests {
     use super::*;
     use broker_economics::descriptor::Descriptor;
-    use broker_economics::kotva_core::{Cbor, IdentityKey};
     use broker_economics::visibility::{AssuranceLevel, VisibilityClass};
+    use broker_economics::{Cbor, IdentityKey};
 
     /// A minimal conformant relay: structurally-blind, no lock-in, self-hostable,
     /// forwards ciphertext (no delivery path), unmetered, no token.
@@ -272,9 +272,12 @@ mod tests {
 
     impl GoodRelay {
         fn new() -> Self {
+            // A real kotva-core keypair, not a placeholder `[0u8; 32]` array (the real
+            // `IdentityKey` holds a private signing key and has no such literal constructor).
+            let ik = IdentityKey::from_seed(&[0u8; 32]);
             Self {
                 d: Descriptor {
-                    identity: IdentityKey([0u8; 32]),
+                    identity: ik.public(),
                     kind: CoordinatorKind::Relay,
                     visibility: ContentVisibility::new(
                         VisibilityClass::Blind,
