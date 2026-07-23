@@ -1,0 +1,15 @@
+<svg viewBox="42 60 156 120" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Wakala">
+  <title>Wakala (monochrome)</title>
+  <desc>Single-colour W/relay mark; inherits color via currentColor.</desc>
+  <g fill="none" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M58 76 L91 166 L120 116 L149 166 L182 76"/>
+  </g>
+  <circle cx="120" cy="116" r="23" fill="none" stroke="currentColor" stroke-width="5"/>
+  <g fill="currentColor">
+    <circle cx="58" cy="76" r="10"/>
+    <circle cx="91" cy="166" r="8"/>
+    <circle cx="120" cy="116" r="13"/>
+    <circle cx="149" cy="166" r="8"/>
+    <circle cx="182" cy="76" r="10"/>
+  </g>
+</svg>

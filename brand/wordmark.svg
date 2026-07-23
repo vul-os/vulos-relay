@@ -1,0 +1,29 @@
+<svg width="352" height="96" viewBox="0 0 352 96" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Wakala">
+  <title>Wakala</title>
+  <desc>Mark tile (Broker Amber) with the W/relay glyph, locked up with the "Wakala" wordmark.</desc>
+  <!-- mark tile, scaled into a 72px tile -->
+  <svg x="8" y="12" width="72" height="72" viewBox="0 0 240 240">
+    <defs>
+      <linearGradient id="ww-g" x1="0" y1="0" x2="240" y2="240" gradientUnits="userSpaceOnUse">
+        <stop offset="0" stop-color="#FFC24B"/>
+        <stop offset=".55" stop-color="#FF8A3D"/>
+        <stop offset="1" stop-color="#E8543D"/>
+      </linearGradient>
+    </defs>
+    <rect x="0" y="0" width="240" height="240" rx="52" fill="url(#ww-g)"/>
+    <g fill="none" stroke="#ffffff" stroke-width="16" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M58 76 L91 166 L120 116 L149 166 L182 76"/>
+    </g>
+    <circle cx="120" cy="116" r="23" fill="none" stroke="#14B8A6" stroke-width="5"/>
+    <g fill="#ffffff">
+      <circle cx="58" cy="76" r="10"/>
+      <circle cx="91" cy="166" r="8"/>
+      <circle cx="120" cy="116" r="13"/>
+      <circle cx="149" cy="166" r="8"/>
+      <circle cx="182" cy="76" r="10"/>
+    </g>
+  </svg>
+  <!-- wordmark: no external fonts — system UI stack only, ember reads on light and dark -->
+  <text x="96" y="61" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="46" font-weight="700" letter-spacing="-1" fill="#C2410C">Wakala</text>
+</svg>
