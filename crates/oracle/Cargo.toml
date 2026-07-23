@@ -1,0 +1,15 @@
+[package]
+name = "oracle"
+description = "The KOTVA `oracle` coordinator kind: physical-world / real-fact attestation (delivered? ride done?), disclosed (CONTRACT §5/§6)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+broker-economics = { path = "../broker-economics" }
+broker-conformance = { path = "../broker-conformance" }

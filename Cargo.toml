@@ -25,6 +25,12 @@ members = [
     "crates/gateway",
     "crates/admin",
     "crates/relay",
+    "crates/indexer",
+    "crates/labeler",
+    "crates/matcher",
+    "crates/arbiter",
+    "crates/oracle",
+    "crates/compute",
 ]
 
 [workspace.package]

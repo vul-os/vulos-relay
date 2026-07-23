@@ -1,0 +1,15 @@
+[package]
+name = "labeler"
+description = "The KOTVA `labeler` coordinator kind: moderation labels over public objects, opt-in and subscribable — the canonical CONTRACT §4 derived-view carve-out example."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+broker-economics = { path = "../broker-economics" }
+broker-conformance = { path = "../broker-conformance" }

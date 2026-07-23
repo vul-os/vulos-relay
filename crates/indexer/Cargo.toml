@@ -1,0 +1,15 @@
+[package]
+name = "indexer"
+description = "The KOTVA `indexer` coordinator kind: search/discovery/global product-and-price view over a public corpus, ranked only within its own opt-in derived view (CONTRACT §4 derived-view carve-out, §5)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+broker-economics = { path = "../broker-economics" }
+broker-conformance = { path = "../broker-conformance" }
