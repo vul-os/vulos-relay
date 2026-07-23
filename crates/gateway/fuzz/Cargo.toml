@@ -1,0 +1,63 @@
+# cargo-fuzz project for the `gateway` crate — NOT a member of the main Wakala workspace (the
+# `[workspace]` table below detaches it, per the standard cargo-fuzz convention: libFuzzer/
+# nightly-only build flags must never leak into `cargo build --workspace` / `cargo test --workspace`
+# on stable). Mirrors how envoir's own top-level `fuzz/` was structured before the gateway (and its
+# fuzz coverage) moved here in Wave W2.
+#
+# Run with: `cargo +nightly fuzz run <target>` (see README.md).
+
+[package]
+name = "gateway-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.gateway]
+path = ".."
+
+# Tag-pinned substrate (the isango guardrail: never HEAD, never a moving path dep) — same pin as
+# the `gateway` crate itself (see `../Cargo.toml`). Needed directly by `gateway_admission.rs` to
+# construct DMTAP identity keypairs.
+[dependencies.kotva-core]
+git = "https://github.com/vul-os/kotva"
+tag = "core-v0.2.0"
+
+[workspace]
+members = ["."]
+
+# One target per attacker-controlled parsing/verification boundary at the gateway's admission
+# surface (§7.9, §7.10) — the real attack surface: a connecting legacy SMTP client presents fully
+# attacker-controlled bytes (a claimed key + signature, or an inbound local-part) before any other
+# authentication has happened. Each target's contract (see the shared header comment in each
+# `fuzz_targets/*.rs` file): never panic / never UB / never hang on ANY input.
+
+# 1. `IdentityRegistry::admit` (§7.9, `authz.rs`): a presented key + signature pair, both fully
+# attacker-controlled, handed straight to `kotva-core`'s Ed25519 `verify_domain` before anything
+# else is checked.
+[[bin]]
+name = "gateway_admission"
+path = "fuzz_targets/gateway_admission.rs"
+test = false
+doc = false
+bench = false
+
+# 2. `forwarded_addr::{encode,decode}` (§7.10.2, `forwarded_addr.rs`): the SRS-style reversible
+# gateway-alias local-part codec. An inbound legacy local-part is fully attacker-controlled
+# (`decode` must never panic and must fail closed on anything non-canonical); `encode` then
+# `decode` must round-trip for any well-formed `(local, native_domain)` pair (canonical-form
+# bijection, mirroring the sibling wire-decoder targets' round-trip-idempotence contract).
+[[bin]]
+name = "gateway_alias"
+path = "fuzz_targets/gateway_alias.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1
