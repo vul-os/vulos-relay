@@ -18,17 +18,29 @@
 //!
 //! ## Module plan (implementation order)
 //!
-//! | Module | REACH rule | Substrate-typed? |
-//! |---|---|---|
-//! | `sni`    | Peek the TLS ClientHello SNI without terminating; demux (REACH-1). | no — unblocked |
-//! | `tunnel` | The box↔adapter reverse tunnel (libp2p Noise + yamux); adapter opens one stream per inbound conn (REACH profile §2). | no — unblocked |
-//! | `zone`   | Single-writer subdomain namespace + `LocationRecord` hints (REACH-3/-7, RESERVE). | partly — needs kotva-core naming |
-//! | `auth`   | Mutual key-auth of the tunnel to the box `IK` (DMTAP-Auth, REACH-2). | yes — kotva-core |
-//! | `descriptor` | Signed discovery-only adapter descriptor + tariff + receipts (REACH-11). | yes — kotva-core |
+//! | Module | REACH rule | Substrate-typed? | Status |
+//! |---|---|---|---|
+//! | `sni`     | Peek the TLS ClientHello SNI without terminating; demux (REACH-1). | no — unblocked | **done** (W4) |
+//! | `tunnel`  | The box↔adapter reverse tunnel (yamux); adapter opens one stream per inbound conn (REACH profile §2). | no — unblocked | **done** (W4), transport-level only |
+//! | `ingress` | The public :443 listener + fail-closed routing (REACH-1/-5/-6). | no — unblocked | **done** (W4) |
+//! | `zone`   | Single-writer subdomain namespace + `LocationRecord` hints (REACH-3/-7, RESERVE). | partly — needs kotva-core naming | not started |
+//! | `auth`   | Mutual key-auth of the tunnel to the box `IK` (DMTAP-Auth, REACH-2). | yes — kotva-core | not started |
+//! | `descriptor` | Signed discovery-only adapter descriptor + tariff + receipts (REACH-11). | yes — kotva-core | not started |
 //!
-//! The `sni` + `tunnel` transport core is pure plumbing and is built first; `auth`
-//! and `descriptor` route through the [`broker_economics::kotva_core`] seam and stay
-//! stubbed until that crate is pinned (HANDOVER §Guardrails-1).
+//! The `sni` + `tunnel` + `ingress` transport core is pure plumbing and is built
+//! first (W4); `auth` and `descriptor` route through the
+//! [`broker_economics::kotva_core`] seam and stay stubbed until that crate is
+//! pinned (HANDOVER §Guardrails-1).
+//!
+//! **REACH-2 gap, disclosed plainly:** the box↔adapter control connection
+//! implemented in `tunnel::read_registration`/[`TunnelHandle::spawn`] is a
+//! **plain, unauthenticated TCP connection** — any TCP client that speaks the
+//! tiny registration frame can currently claim a name. REACH-2 requires this
+//! leg to be mutually authenticated to the box's `IK` (DMTAP-Auth over a
+//! libp2p Noise-secured transport); that is blocked on `kotva-core` identity
+//! types not yet being pinned in this workspace and is tracked as the future
+//! `auth` module above, not silently assumed. Do not point this control
+//! listener at a public network until that lands.
 //!
 //! ## Fail-closed posture (REACH-6)
 //!
@@ -42,6 +54,13 @@ use broker_conformance::{Coordinator, Gate, LockIn, Metering, SelfHost, Settleme
 use broker_economics::descriptor::Descriptor;
 use broker_economics::kinds::CoordinatorKind;
 use broker_economics::visibility::{AssuranceLevel, ContentVisibility, VisibilityClass};
+
+pub mod ingress;
+pub mod sni;
+pub mod tunnel;
+
+pub use ingress::{AdapterServer, IngressError, TunnelAcceptError};
+pub use tunnel::{RegistryError, TunnelError, TunnelHandle, TunnelRegistry};
 
 /// The assurance level of a served name, fixed by who controls its DNS zone
 /// (REACH-1a). This is the one place the adapter's blindness is `structural` vs
