@@ -58,6 +58,17 @@
 //! [`mta_sts::HttpsPolicyFetcher`] is a minimal HTTP/1.1-over-rustls GET. The in-process trait
 //! doubles remain for unit tests; the socket/DNS impls are the production leg (unit-tested via pure
 //! wire-format round-trips, not live network calls).
+//!
+//! ## `unsafe` posture
+//! This library target is `#![forbid(unsafe_code)]`: every security-relevant module here (`dkim`,
+//! `spf`, `dmarc`, `mta_sts`, `inbound`, `outbound`, `authz`, ...) is provably free of `unsafe`, not
+//! merely audited-and-believed-to-be. The crate's Cargo.toml opts out of the workspace-wide
+//! `unsafe_code = "forbid"` lint only because the separate `[[bin]]` target (`src/main.rs`) needs
+//! one `unsafe { libc::signal(...) }` block for the SIGINT/SIGTERM handler — that binary crate root
+//! is a distinct compilation unit from this one, so forbidding `unsafe` here does not, and cannot,
+//! cover it; this is the narrowest scope that still lets `cargo build` catch a stray `unsafe` added
+//! to any library module in review, rather than relying on a manual grep at audit time.
+#![forbid(unsafe_code)]
 
 pub mod admin;
 pub mod alias_map;
