@@ -19,6 +19,7 @@
 resolver = "2"
 members = [
     "crates/broker-economics",
+    "crates/broker-billing",
     "crates/broker-conformance",
     "crates/reachability-adapter",
     "crates/gateway",
