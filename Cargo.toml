@@ -24,6 +24,7 @@ members = [
     "crates/reachability-adapter",
     "crates/gateway",
     "crates/admin",
+    "crates/relay",
 ]
 
 [workspace.package]

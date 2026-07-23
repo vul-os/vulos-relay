@@ -1,0 +1,54 @@
+[package]
+name = "relay"
+description = "The KOTVA `relay` coordinator kind: a content-blind libp2p Circuit Relay v2 server for NAT'd mesh peers (CONTRACT §5, blind/structural)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+broker-economics = { path = "../broker-economics" }
+broker-conformance = { path = "../broker-conformance" }
+# Tag-pinned substrate (the isango guardrail: never HEAD, never a moving path dep) — same tag
+# broker-economics/gateway/reachability-adapter already pin. Only needed here for the real
+# `IdentityKey` used to sign this coordinator's descriptor (re-exported by broker-economics, but
+# named directly too so `RelayCoordinator::new` callers aren't forced through that re-export).
+kotva-core = { git = "https://github.com/vul-os/kotva", tag = "core-v0.2.0" }
+
+# --- The mesh substrate (server.rs): Circuit Relay v2 over TCP + Noise + Yamux. Matches the
+# libp2p major/minor version + feature shape already live-tested in envoir's `dmtap-p2p`
+# (COORDINATION.md / BUILD-PLAN.md W5), so the ecosystem stays on one libp2p line. Only the
+# **server**-role features this crate actually runs are enabled — no `kad`/`quic`/`dcutr`, which
+# belong to a *mesh node* (dmtap-p2p), not a relay-only forwarder.
+libp2p = { version = "0.56", features = [
+    "tokio",
+    "tcp",
+    "noise",
+    "yamux",
+    "identify",
+    "relay",
+    "macros",
+] }
+
+# Async runtime, contained inside `server.rs` (a background swarm task) — the rest of the crate
+# (`RelayCoordinator`, the descriptor) stays synchronous, same containment shape as dmtap-p2p.
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time"] }
+
+[dev-dependencies]
+# The two-peer loopback circuit test (tests/circuit.rs) builds its own minimal test-only libp2p
+# peer swarms, which need the relay **client** role + a liveness protocol (`ping`) to prove a
+# frame actually crosses the relayed hop.
+libp2p = { version = "0.56", features = [
+    "tokio",
+    "tcp",
+    "noise",
+    "yamux",
+    "identify",
+    "relay",
+    "ping",
+    "macros",
+] }
