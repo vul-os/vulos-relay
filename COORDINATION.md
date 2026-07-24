@@ -313,3 +313,32 @@ anything.)
 
 After the closure pass returns and any finding is fixed, the §21 action-vs-clause audit — the last
 disclosed gap — is complete at full strength.
+
+---
+
+## "FIX TO PERFECTION" — §21 AUDIT COMPLETE AT FULL STRENGTH (2026-07-24)
+
+The last disclosed gap (§21 action-vs-clause, previously unreached ranges) is now closed at
+full-strength clause-diff, and a systematic defect it surfaced was swept registry-wide.
+
+**Three taxonomy defects, all the same class — a security rejection mislabelled `DENY_POLICY`
+(which §21.2 explicitly reserves for a *non*-security deny):**
+- `0x070E ERR_GATEWAYAUTHZ_DENIED` — operator-unreachable open-relay fail-safe. → `FAIL_CLOSED_BLOCK` (`8a8acc9`).
+- `0x0409 ERR_GROUP_POLICY_VIOLATION` — the rank-rule (anti-takeover) variant. Multi-condition code, now dual: ordinary denials `DENY_POLICY`, rank-rule `FAIL_CLOSED_BLOCK`. Added the missing anti-takeover vector `DMTAP-GRPGOV-07` (`5e65d80`).
+- `0x0508 ERR_CAPABILITY_DELEGATION_INVALID` — over-attenuated / forged / unknown-caveat token; §18.7.3 says MUST fail closed. → `FAIL_CLOSED_BLOCK`, swept across the registry, 4 conformance vectors (both suite files) and 4 operational failure-mode rows (`79f052e`).
+
+**Then swept the whole `DENY_POLICY` class** to confirm no fourth instance: `0x0416` (RTC capacity),
+`0x050B` (deliberate revocation), `0x070D`/`0x0806` (quota), `0x0804` (size-tier, explicit reasoning),
+`0x080C` (spool resource cap) are all *genuine* policy/resource denials and correct as-is. The boundary
+is now consistent registry-wide: forgery/over-attenuation/takeover/validity → `FAIL_CLOSED_BLOCK`;
+resource-cap/quota/capacity/deliberate-revocation → `DENY_POLICY`.
+
+**Coverage now:** every §21 error range clause-verified at full strength (0x02xx/0x05xx/0x09xx and
+0x01xx earlier; 0x03xx/0x04xx/0x06xx/0x07xx + 0x01xx-remainder this pass). Oracle-axis clean. No
+dangling citations. §18.7.3 caveats now vectored. Every finding fixed; lint 0 errors.
+
+kotva commit range for "fix to perfection": **`8a8acc9` … `79f052e`**.
+
+The last disclosed gap is closed. Consistent with the standing honesty note: this means *no known gap
+left unverified*, not a proof that no future deep read of some surface finds anything — that bar is
+unreachable for a spec this size, and claiming it would be the dishonesty this whole pass avoided.
