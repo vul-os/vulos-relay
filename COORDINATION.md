@@ -287,3 +287,29 @@ disclosed, not a clean-W6 convergence. The bounded follow-up, if the pass is eve
 §21 action-vs-clause audit over error ranges `0x03xx`/`0x04xx`/`0x06xx`/`0x07xx` and `0x0107`–`0x010A`
 / `0x0110`–`0x0127` (the delivery/auth/PUB ranges were audited clean). These are unchecked, not
 known-defective.
+
+
+---
+
+## SPEC PASS REOPENED — founder: "fix to perfection" (2026-07-24)
+
+The (a)-freeze was superseded by a direct founder instruction to fix to perfection. Interpreted as:
+**close the one concrete disclosed gap** — the §21 action-vs-clause audit over the error ranges the
+final audit had not reached — and fix anything it surfaces. (The spec does not converge on literal
+zero findings; it converges on ~one finding per deep read of a previously-unread surface, so
+"perfection" here means *no known gap left unverified*, not a guarantee no future reader finds
+anything.)
+
+- **Mechanical layer:** all 107 rows in ranges 0x03xx/0x04xx/0x06xx/0x07xx + 0x01xx-remainder
+  checked for dangling clause citations — every KOTVA § resolves (kotva working check).
+- **Semantic layer (agent):** one real defect — `0x070E ERR_GATEWAYAUTHZ_DENIED` labelled
+  `DENY_POLICY` where §12.2 makes it a security fail-closed and the conformance vector + every
+  sibling open-relay code say `FAIL_CLOSED_BLOCK`. Fixed `8a8acc9`. The mirror of the ack-oracle
+  case: there the prose was right and the vector drifted; here the vector was right and the
+  registry drifted. Oracle-axis (silent-vs-notify) clean across 0x03xx/0x07xx.
+- **Closure pass (agent, running):** bringing the last thin registry-row-only slice
+  (0x0107–0x010A, 0x0110–0x0127, 0x0409–0x0413, 0x0601–0x0606) to full line-by-line clause-diff
+  strength, so the entire §21 registry is clause-verified with no asterisks.
+
+After the closure pass returns and any finding is fixed, the §21 action-vs-clause audit — the last
+disclosed gap — is complete at full strength.
