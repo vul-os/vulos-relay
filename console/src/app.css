@@ -94,6 +94,19 @@
 
   --focus-ring: 0 0 0 3px color-mix(in srgb, var(--accent) 50%, transparent);
   --nav-scrim: rgba(12, 12, 12, 0.82);
+
+  /* Motion — one easing curve + a short duration ladder shared by every
+     interactive primitive below (buttons, rows, pills, fields), so a hover,
+     a press and a focus all read as the same material responding rather than
+     a grab-bag of ad hoc transitions. Crisp on purpose: an operator console
+     is scanned and clicked quickly, so nothing should feel floaty. --dur-slow
+     exists only for the page-load .reveal utility, which is felt once, not
+     repeated on every hover — everything else should stay in the fast/base
+     pair. */
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 120ms;
+  --dur: 180ms;
+  --dur-slow: 320ms;
 }
 
 /* Dark stated explicitly so an explicit Dark choice is symmetric with Light. */
@@ -260,7 +273,7 @@ p {
 a {
   color: var(--accent);
   text-decoration: none;
-  transition: color 0.16s ease;
+  transition: color var(--dur-fast) var(--ease);
 }
 a:hover {
   color: var(--accent-hover);
@@ -311,11 +324,21 @@ button {
 
 /* Vulos cards are flat: a thin subtle border on the surface tone, no drop
    shadow, modest radius. The shadow read as "web dashboard"; the OS chrome is
-   calmer than that. */
+   calmer than that. Refined here so the card reads as CONSTRUCTED rather than
+   an outline around empty space: a barely-there top-to-bottom surface-tone
+   step (a hair of --bg-elevated bleeding down into --bg-surface, not a raw
+   white overlay) stands in for the "light catching the top edge" a shadow
+   would otherwise fake — depth from tone, not from blur. */
 .panel {
-  background: var(--bg-surface);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--bg-elevated) 32%, var(--bg-surface) 68%) 0%,
+    var(--bg-surface) 5.5rem
+  );
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
+  position: relative;
+  transition: border-color var(--dur) var(--ease);
 }
 
 .panel-header {
@@ -325,6 +348,21 @@ button {
   gap: 1rem;
   padding: 1.1rem 1.4rem 0.9rem;
   border-bottom: 1px solid var(--border-subtle);
+  position: relative;
+}
+
+/* A second, brighter hairline UNDER the header that fades out toward the
+   trailing edge — reads as a deliberate ruled line under a masthead (like a
+   letterhead rule), not just "a border was left on". Kept to the header's own
+   inline padding so it stops short of the card's rounded corners. */
+.panel-header::after {
+  content: '';
+  position: absolute;
+  left: 1.4rem;
+  right: 1.4rem;
+  bottom: -1px;
+  height: 1px;
+  background: linear-gradient(90deg, var(--border-emphasis), transparent 85%);
 }
 
 .panel-header h2 {
@@ -332,7 +370,9 @@ button {
 }
 
 /* Section kicker in the Vulos idiom: small muted monospace small-caps — the
-   same treatment as the file-view NAME / SIZE / MODIFIED column headers. */
+   same treatment as the file-view NAME / SIZE / MODIFIED column headers. The
+   leading tick is a small IDE-grade tell (a prompt mark, not a bullet) that
+   costs nothing layout-wise since panel-kicker only ever appears inline. */
 .panel-kicker {
   font-family: var(--font-mono);
   font-size: 0.6875rem;
@@ -340,6 +380,17 @@ button {
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--text-muted);
+}
+
+.panel-kicker::before {
+  content: '';
+  display: inline-block;
+  width: 0.5em;
+  height: 1px;
+  margin-right: 0.5em;
+  background: currentColor;
+  opacity: 0.6;
+  vertical-align: middle;
 }
 
 .panel-body {
@@ -359,16 +410,30 @@ button {
   background: var(--bg-elevated);
   color: var(--text-primary);
   cursor: pointer;
-  transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
+  transition: transform var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease), background-color var(--dur-fast) var(--ease);
 }
 
 .btn:hover {
   border-color: var(--accent);
+  background: var(--bg-hover);
   transform: translateY(-1px);
 }
 
+/* The press should feel instant, not eased-in — only the release (back to
+   :hover) gets the full --dur-fast ease. A halved duration on :active is what
+   separates "crisp" from "floaty" for a click that's already happened. */
 .btn:active {
   transform: translateY(0);
+  background: var(--bg-active);
+  transition-duration: calc(var(--dur-fast) / 2);
+}
+
+/* Focus must win over any variant's own resting box-shadow (btn-primary's
+   brand glow, for one) so keyboard focus is always unmistakable and never
+   masked by a variant's default look. */
+.btn:focus-visible {
+  box-shadow: var(--focus-ring);
 }
 
 /* Fills use --accent-fill, not --accent. The two have different contrast
@@ -388,6 +453,13 @@ button {
   box-shadow: 0 8px 22px -8px color-mix(in srgb, var(--accent-fill) 65%, transparent);
 }
 
+/* Pressed fill deepens further and the glow tucks in — the same "already
+   happened" instant feel as the base .btn:active, just on the filled variant. */
+.btn-primary:active {
+  background: color-mix(in srgb, var(--accent-fill) 78%, black);
+  box-shadow: 0 3px 10px -8px color-mix(in srgb, var(--accent-fill) 55%, transparent);
+}
+
 .btn-ghost {
   background: transparent;
   border-color: transparent;
@@ -396,7 +468,12 @@ button {
 
 .btn-ghost:hover {
   color: var(--text-primary);
+  background: var(--bg-hover);
   border-color: var(--border-default);
+}
+
+.btn-ghost:active {
+  background: var(--bg-active);
 }
 
 .btn:disabled {
@@ -410,6 +487,19 @@ button {
   border-color: var(--status-danger);
   color: var(--status-danger);
   background: transparent;
+}
+
+/* Own hover/active — without this the base .btn:hover rule (equal specificity,
+   earlier in source) would win and quietly turn a danger button's border
+   bronze on hover, which is the one thing a destructive action must never do. */
+.btn-danger-outline:hover {
+  border-color: var(--status-danger);
+  background: var(--status-danger-soft);
+  color: var(--status-danger);
+}
+
+.btn-danger-outline:active {
+  background: color-mix(in srgb, var(--status-danger) 20%, transparent);
 }
 
 label {
@@ -432,7 +522,17 @@ textarea {
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   color: var(--text-primary);
-  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) var(--ease);
+}
+
+/* A quiet pre-focus tell — border steps up one notch on the emphasis scale
+   before the field is even active, so a field reads as reachable as soon as
+   the pointer arrives, not only once it's clicked into. */
+input:hover:not(:disabled):not(:focus),
+select:hover:not(:disabled):not(:focus),
+textarea:hover:not(:disabled):not(:focus) {
+  border-color: var(--border-emphasis);
 }
 
 input:focus,
@@ -441,6 +541,15 @@ textarea:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: var(--focus-ring);
+}
+
+input:disabled,
+select:disabled,
+textarea:disabled {
+  background: var(--bg-surface);
+  color: var(--text-faint);
+  cursor: not-allowed;
+  opacity: 0.7;
 }
 
 .field {
@@ -456,14 +565,19 @@ textarea:focus {
 .note {
   font-size: 0.8rem;
   color: var(--text-secondary);
+  /* --bg-base rather than a surface tone is deliberate: sitting inside a
+     --bg-surface panel-body, a base-tone note reads as a slightly RECESSED
+     slot (like a quoted callout), the opposite depth cue from the panel's own
+     raised top-highlight — two depth languages, same token ladder. */
   background: var(--bg-base);
   border: 1px solid var(--border-strong);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 0.7rem 0.9rem;
   display: flex;
   gap: 0.55rem;
   align-items: flex-start;
   line-height: 1.45;
+  transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
 
 .note strong {
@@ -490,9 +604,13 @@ textarea:focus {
   font-weight: 500;
   letter-spacing: 0.02em;
   padding: 0.28rem 0.6rem;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   border: 1px solid transparent;
   white-space: nowrap;
+  /* Some pages flip a pill's semantic class reactively (Conformance swaps
+     pass/behavioral/violation on the same element) — animate the swap rather
+     than snapping, without touching what each variant actually means. */
+  transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 
 .pill-pass {
@@ -517,6 +635,7 @@ textarea:focus {
   background: currentColor;
   box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 25%, transparent), 0 0 8px currentColor;
   flex-shrink: 0;
+  transition: color var(--dur) var(--ease);
 }
 
 /* the ink stamp — used on any freshly signed artifact */
@@ -564,6 +683,15 @@ table.ledger {
   font-size: 0.84rem;
 }
 
+/* Header gets its own faint surface tint + the stronger --border-emphasis
+   rule (rows below use the quieter --border-subtle) — the header/body
+   distinction should read the instant your eye lands on the table, not only
+   once you notice the uppercase tracking. NB: no position:sticky here — the
+   Shell topbar is itself sticky at top:0 with z-index:10, and this table
+   never sits inside a height-bounded scroll container, so a sticky thead
+   would stack invisibly behind the topbar the moment the page scrolls rather
+   than floating usefully above the rows. Revisit only if a scroll-bounded
+   table wrapper is introduced. */
 table.ledger th {
   text-align: left;
   font-family: var(--font-mono);
@@ -572,8 +700,9 @@ table.ledger th {
   text-transform: uppercase;
   color: var(--text-tertiary);
   font-weight: 500;
-  padding: 0.5rem 0.7rem;
-  border-bottom: 1px solid var(--border-strong);
+  padding: 0.6rem 0.7rem;
+  background: color-mix(in srgb, var(--bg-elevated) 55%, transparent);
+  border-bottom: 1px solid var(--border-emphasis);
 }
 
 table.ledger td {
@@ -588,7 +717,9 @@ table.ledger tbody tr:last-child td {
 
 /* Numeric columns: right-aligned so magnitudes line up, and tabular figures so
    digits sit in fixed-width cells — an operator scanning a metered/billed pair
-   for a discrepancy reads down the column, not across the row. */
+   for a discrepancy reads down the column, not across the row. Slightly
+   heavier weight than prose text gives the digits themselves more presence
+   without touching colour, so the treatment survives in both themes untouched. */
 table.ledger th.num,
 table.ledger td.num {
   text-align: right;
@@ -596,8 +727,20 @@ table.ledger td.num {
   font-feature-settings: 'tnum' 1;
 }
 
+table.ledger td.num {
+  font-weight: 500;
+}
+
+table.ledger tbody tr {
+  transition: background-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+
+/* A thin left accent tick alongside the tint — the same "which row is live"
+   cue as an IDE's active-line gutter mark, kept to a hairline so it reads as
+   structure rather than a highlight bar. */
 table.ledger tbody tr:hover {
   background: color-mix(in srgb, var(--accent) 5%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .hex {
@@ -622,5 +765,72 @@ table.ledger tbody tr:hover {
 @media (max-width: 860px) {
   .panel-body {
     padding: 1rem;
+  }
+}
+
+/* ---------- page-load reveal ----------
+   A tasteful, opt-in entrance for a page's own cards/rows — pure CSS, no
+   IntersectionObserver: this fires once on mount, not on scroll, so it suits
+   an operator console where content is above the fold and read immediately
+   rather than a marketing page scrolled into view. Apply `.reveal` to a card
+   and (optionally) one of `.reveal-1`..`.reveal-6` to stagger a group — e.g.
+   a row of stat cards each getting the next step so they cascade in instead
+   of popping together as one block. */
+@keyframes reveal-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.reveal {
+  animation: reveal-in var(--dur-slow) var(--ease) both;
+}
+
+.reveal-1 {
+  animation-delay: 40ms;
+}
+.reveal-2 {
+  animation-delay: 90ms;
+}
+.reveal-3 {
+  animation-delay: 140ms;
+}
+.reveal-4 {
+  animation-delay: 190ms;
+}
+.reveal-5 {
+  animation-delay: 240ms;
+}
+.reveal-6 {
+  animation-delay: 290ms;
+}
+
+/* Every transition/animation this file adds — panel, button, field, pill,
+   table-row and reveal states alike — collapses to a no-op here. A single
+   blanket rule is more reliable than chasing each new motion property added
+   above through its own reduced-motion override. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .reveal,
+  .reveal-1,
+  .reveal-2,
+  .reveal-3,
+  .reveal-4,
+  .reveal-5,
+  .reveal-6 {
+    opacity: 1;
+    transform: none;
   }
 }

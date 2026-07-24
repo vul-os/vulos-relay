@@ -33,9 +33,17 @@
     </div>
     <p class="desc">{CLASS_DESCRIPTION[visibility.class]}</p>
     {#if warn}
-      <p class="assurance-note warn-text">
-        <strong>Declared, not verified.</strong> {LEVEL_DESCRIPTION[visibility.level]} A relying party cannot check this claim independently (CONTRACT §3.4) — never present it as verified.
-      </p>
+      <div class="assurance-note warn-text">
+        <svg class="caveat-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none">
+          <path
+            d="M12 4.2 21 19.5H3L12 4.2z"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linejoin="round"
+          /><path d="M12 10.4v4.1M12 17.3h.01" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+        </svg>
+        <p><strong>Declared, not verified.</strong> {LEVEL_DESCRIPTION[visibility.level]} A relying party cannot check this claim independently (CONTRACT §3.4) — never present it as verified.</p>
+      </div>
     {:else if verifiablyBlind}
       <p class="assurance-note ok-text">
         <strong>{LEVEL_LABEL[visibility.level]} — verifiable.</strong> {LEVEL_DESCRIPTION[visibility.level]}
@@ -54,9 +62,10 @@
     gap: 1rem;
     align-items: flex-start;
     padding: 1.1rem 1.3rem;
-    border-radius: 12px;
+    border-radius: var(--radius-lg);
     border: 1.5px solid var(--accent);
     background: var(--accent-soft);
+    transition: border-color var(--dur) var(--ease), background-color var(--dur) var(--ease);
   }
 
   .badge.warn {
@@ -66,7 +75,7 @@
 
   .badge.sm {
     padding: 0.7rem 0.9rem;
-    border-radius: 9px;
+    border-radius: var(--radius-md);
   }
 
   .glyph {
@@ -112,6 +121,7 @@
     display: flex;
     align-items: baseline;
     gap: 0.4rem;
+    flex-wrap: wrap;
   }
 
   .sm .class-row {
@@ -144,16 +154,46 @@
   }
 
   .assurance-note {
-    margin: 0.55rem 0 0;
+    margin: 0.7rem 0 0;
     font-size: 0.78rem;
     line-height: 1.5;
     color: var(--text-secondary);
-    max-width: 52ch;
+    max-width: 54ch;
+  }
+
+  .assurance-note p {
+    margin: 0;
   }
 
   .sm .assurance-note {
     font-size: 0.72rem;
-    margin-top: 0.35rem;
+    margin-top: 0.45rem;
+  }
+
+  /* The "declared, not verified" caveat is a callout, not a stray sentence:
+     a left rule + its own icon give it shape independent of colour, so the
+     caveat still reads as a caveat if colour is stripped entirely. */
+  .warn-text {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    padding: 0.55rem 0.7rem;
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--status-warning) 10%, transparent);
+    box-shadow: inset 2px 0 0 var(--status-warning);
+  }
+
+  .caveat-icon {
+    width: 1.05rem;
+    height: 1.05rem;
+    flex-shrink: 0;
+    margin-top: 0.1rem;
+    color: var(--status-warning);
+  }
+
+  .sm .caveat-icon {
+    width: 0.9rem;
+    height: 0.9rem;
   }
 
   .warn-text strong {

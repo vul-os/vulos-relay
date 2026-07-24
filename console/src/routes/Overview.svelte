@@ -52,19 +52,59 @@
 </script>
 
 <div class="page">
-  <div class="page-head">
-    <div>
-      <span class="kicker">Overview</span>
-      <h1>Coordinator posture</h1>
-      <p class="lede">The coordinator's declared posture and the numbers an operator checks first.</p>
-    </div>
-  </div>
+  <header class="page-head reveal">
+    <span class="panel-kicker">Overview</span>
+    <h1>Coordinator posture</h1>
+    <p class="lede">The coordinator's declared posture and the numbers an operator checks first.</p>
+  </header>
 
   {#if loading || !descriptor || !conformance}
-    <p class="loading">Reading the current signed descriptor…</p>
+    <div class="loading-state reveal" role="status" aria-live="polite">
+      <p class="loading-line">
+        <span class="loading-dot" aria-hidden="true"></span>
+        Reading the current signed descriptor…
+      </p>
+
+      <div class="grid-top" aria-hidden="true">
+        <div class="panel skeleton-panel">
+          <div class="skeleton-head">
+            <span class="skeleton skeleton-kicker"></span>
+            <span class="skeleton skeleton-title"></span>
+          </div>
+          <div class="skeleton-body">
+            <span class="skeleton skeleton-badge"></span>
+          </div>
+        </div>
+        <div class="panel skeleton-panel">
+          <div class="skeleton-head">
+            <span class="skeleton skeleton-kicker"></span>
+            <span class="skeleton skeleton-title"></span>
+          </div>
+          <div class="skeleton-body">
+            <div class="skeleton-strip">
+              {#each Array.from({ length: 8 }) as _, i (i)}
+                <span class="skeleton skeleton-light"></span>
+              {/each}
+            </div>
+            <span class="skeleton skeleton-line" style="width: 90%"></span>
+            <span class="skeleton skeleton-line" style="width: 64%"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="stat-grid" aria-hidden="true">
+        {#each Array.from({ length: 4 }) as _, i (i)}
+          <div class="panel skeleton-panel skeleton-stat">
+            <span class="skeleton skeleton-stat-label"></span>
+            <span class="skeleton skeleton-stat-value"></span>
+            <span class="skeleton skeleton-stat-hint"></span>
+          </div>
+        {/each}
+      </div>
+    </div>
   {:else}
     <div class="grid-top">
-      <section class="panel visibility-panel">
+      <section class="panel visibility-panel reveal reveal-1">
         <div class="panel-header">
           <div>
             <span class="panel-kicker">Kind · {descriptor.kind}</span>
@@ -74,10 +114,16 @@
         </div>
         <div class="panel-body">
           <VisibilityBadge visibility={descriptor.visibility} />
+          {#if descriptor.note}
+            <div class="note">
+              <span aria-hidden="true">◈</span>
+              <span>{descriptor.note}</span>
+            </div>
+          {/if}
         </div>
       </section>
 
-      <section class="panel conformance-panel">
+      <section class="panel conformance-panel reveal reveal-2">
         <div class="panel-header">
           <div>
             <span class="panel-kicker">COORD-1..8</span>
@@ -90,113 +136,272 @@
         <div class="panel-body">
           <ConformanceStrip report={conformance} />
           <p class="strip-note">Amber lights are <strong>behavioral</strong> — decidable only against real traffic, not a violation. Hover a light for its clause.</p>
-          <dl class="clause-legend">
-            {#each conformance.findings as f (f.id)}
-              <div class="clause-row">
-                <dt>{f.id}</dt>
-                <dd>{CLAUSE_TITLE[f.id] ?? f.id} <span class="clause-ref">{f.clause}</span></dd>
-              </div>
-            {/each}
-          </dl>
+          {#if conformance.findings.length > 0}
+            <dl class="clause-legend">
+              {#each conformance.findings as f (f.id)}
+                <div class="clause-row">
+                  <dt>{f.id}</dt>
+                  <dd>{CLAUSE_TITLE[f.id] ?? f.id} <span class="clause-ref">{f.clause}</span></dd>
+                </div>
+              {/each}
+            </dl>
+          {:else}
+            <p class="clause-empty">No clause findings reported for this coordinator kind.</p>
+          {/if}
         </div>
       </section>
     </div>
 
-    <div class="stat-grid">
-      {#each RESOURCE_KINDS as k (k)}
-        <StatCard
-          label={kindLabel(k)}
-          value={kindQuantity(k, usageTotals[k] ?? 0).split(' ')[0]}
-          unit={kindQuantity(k, usageTotals[k] ?? 0).split(' ').slice(1).join(' ')}
-          hint="metered this period, all payers"
-        />
-      {/each}
-    </div>
-
-    <div class="stat-grid stat-grid-secondary">
-      <StatCard
-        label="Prepaid balance"
-        value={ledgerMoney(totalBalance, currency)}
-        accent="bronze"
-        hint={lowBalanceCount > 0 ? `${lowBalanceCount} payer${lowBalanceCount > 1 ? 's' : ''} below top-up threshold` : 'all payers above threshold'}
-      />
-      <StatCard
-        label="Receipts issued"
-        value={integer(receipts?.receipts.length ?? 0)}
-        accent="teal"
-        hint="signed usage receipts on file"
-      />
-      <StatCard
-        label="Uptime"
-        value={`${uptimeDays}d ${uptimeHours}h`}
-        hint="in-memory store — resets on restart"
-      />
-      <StatCard
-        label="Operator key"
-        value={descriptor.identity_hex.slice(0, 10) + '…'}
-        hint="current signing identity"
-      />
-    </div>
-
-    <div class="footer-notes">
-      <div class="note">
-        <span aria-hidden="true">◈</span>
-        <span>{descriptor.note}</span>
+    <div class="stat-section">
+      <span class="panel-kicker stat-section-label">Metered usage · this period</span>
+      <div class="stat-grid">
+        {#each RESOURCE_KINDS as k, i (k)}
+          <div class="reveal reveal-{i + 3}">
+            <StatCard
+              label={kindLabel(k)}
+              value={kindQuantity(k, usageTotals[k] ?? 0).split(' ')[0]}
+              unit={kindQuantity(k, usageTotals[k] ?? 0).split(' ').slice(1).join(' ')}
+              hint="metered this period, all payers"
+            />
+          </div>
+        {/each}
       </div>
-      {#if IS_MOCK}
+    </div>
+
+    <div class="stat-section stat-section-secondary">
+      <span class="panel-kicker stat-section-label">Ledger &amp; identity</span>
+      <div class="stat-grid">
+        <div class="reveal reveal-3">
+          <StatCard
+            label="Prepaid balance"
+            value={ledgerMoney(totalBalance, currency)}
+            accent="bronze"
+            hint={lowBalanceCount > 0 ? `${lowBalanceCount} payer${lowBalanceCount > 1 ? 's' : ''} below top-up threshold` : 'all payers above threshold'}
+          />
+        </div>
+        <div class="reveal reveal-4">
+          <StatCard
+            label="Receipts issued"
+            value={integer(receipts?.receipts.length ?? 0)}
+            accent="teal"
+            hint="signed usage receipts on file"
+          />
+        </div>
+        <div class="reveal reveal-5">
+          <StatCard
+            label="Uptime"
+            value={`${uptimeDays}d ${uptimeHours}h`}
+            hint="in-memory store — resets on restart"
+          />
+        </div>
+        <div class="reveal reveal-6">
+          <StatCard
+            label="Operator key"
+            value={descriptor.identity_hex.slice(0, 10) + '…'}
+            hint="current signing identity"
+          />
+        </div>
+      </div>
+    </div>
+
+    {#if IS_MOCK}
+      <div class="footer-notes reveal reveal-6">
         <div class="note note-caution">
           <span aria-hidden="true">⚑</span>
           <span><strong>Demo data.</strong> This build is reading fixture data (VITE_MOCK=1), not a live <code>ephor-admin</code> instance. See <code>console/README.md</code> to point it at a real coordinator.</span>
         </div>
-      {/if}
-    </div>
+      </div>
+    {/if}
   {/if}
 </div>
 
 <style>
+  /* ---------- page rhythm ----------
+     A two-tier gap scale, both drawn from --space-*: --space-6 between major
+     regions of the page (head → top grid → each stat section → footer), and
+     --space-3/4 for the tighter relationships within a region (a section's
+     label to its grid, a card's own internal padding). The bigger the visual
+     distance between two things, the bigger the token — nothing here is an
+     ad-hoc rem. */
   .page {
     display: flex;
     flex-direction: column;
-    gap: 1.6rem;
+    gap: var(--space-6);
   }
 
   .page-head {
     display: flex;
-    justify-content: space-between;
-    align-items: flex-end;
-    gap: 1rem;
-    flex-wrap: wrap;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding-bottom: var(--space-5);
+    border-bottom: 1px solid var(--border-subtle);
+    position: relative;
   }
 
-  .kicker {
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
-    font-weight: 500;
-    letter-spacing: 0.02em;
-    color: var(--text-muted);
+  /* A short bronze segment riding the header's own rule — the same "ruled
+     masthead" idea as .panel-header::after, scaled up for the page's own
+     head instead of a card's. */
+  .page-head::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 58%;
+    bottom: -1px;
+    height: 1px;
+    background: linear-gradient(90deg, var(--accent), transparent 90%);
+    opacity: 0.6;
   }
 
   h1 {
-    font-size: 1.5rem;
-    margin: 0.2rem 0 0.35rem;
+    font-size: 1.7rem;
+    margin: var(--space-1) 0 var(--space-2);
   }
 
   .lede {
     color: var(--text-secondary);
     margin: 0;
-    max-width: 46ch;
+    max-width: 56ch;
   }
 
-  .loading {
+  /* ---------- loading state ----------
+     A composed skeleton of the real layout rather than a bare status line —
+     the operator sees the shape of what's coming (two-panel row, then a row
+     of metric cards) before the numbers land. */
+  .loading-state {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-5);
+  }
+
+  .loading-line {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin: 0;
     color: var(--text-tertiary);
     font-family: var(--font-mono);
     font-size: 0.85rem;
   }
 
+  .loading-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent);
+    flex-shrink: 0;
+    animation: loading-pulse calc(var(--dur-slow) * 4) var(--ease) infinite;
+  }
+
+  @keyframes loading-pulse {
+    0%,
+    100% {
+      opacity: 0.35;
+      transform: scale(0.85);
+    }
+    50% {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  .skeleton {
+    display: block;
+    border-radius: var(--radius-xs);
+    background: color-mix(in srgb, var(--bg-elevated) 65%, var(--bg-hover) 35%);
+    animation: skeleton-pulse calc(var(--dur-slow) * 4) var(--ease) infinite;
+  }
+
+  @keyframes skeleton-pulse {
+    0%,
+    100% {
+      opacity: 0.5;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+
+  .skeleton-head {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-4) var(--space-5) var(--space-3);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .skeleton-kicker {
+    width: 5rem;
+    height: 0.6rem;
+  }
+
+  .skeleton-title {
+    width: 60%;
+    height: 1.05rem;
+  }
+
+  .skeleton-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    padding: var(--space-5);
+  }
+
+  .skeleton-badge {
+    height: 6.4rem;
+    border-radius: var(--radius-md);
+  }
+
+  .skeleton-strip {
+    display: grid;
+    grid-template-columns: repeat(8, minmax(0, 1fr));
+    gap: var(--space-2);
+  }
+
+  @media (max-width: 760px) {
+    .skeleton-strip {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+  }
+
+  .skeleton-light {
+    height: 3.2rem;
+    border-radius: var(--radius-sm);
+  }
+
+  .skeleton-line {
+    height: 0.6rem;
+  }
+
+  .skeleton-stat {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-4) var(--space-5);
+  }
+
+  .skeleton-stat-label {
+    width: 45%;
+    height: 0.6rem;
+  }
+
+  .skeleton-stat-value {
+    width: 70%;
+    height: 1.5rem;
+    margin-top: var(--space-1);
+  }
+
+  .skeleton-stat-hint {
+    width: 85%;
+    height: 0.55rem;
+    margin-top: var(--space-1);
+  }
+
+  /* ---------- top grid ---------- */
   .grid-top {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
-    gap: 1.1rem;
+    gap: var(--space-4);
     align-items: stretch;
   }
 
@@ -206,20 +411,31 @@
     }
   }
 
+  /* Kept short and stretched to match the conformance panel's height, but the
+     content is now centred in the available space (badge + the descriptor's
+     own note, moved in from the page footer where it read as a stray aside)
+     rather than pinned to the top with dead air below it. */
+  .visibility-panel .panel-body {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: var(--space-4);
+  }
+
   .strip-note {
-    margin: 0.9rem 0 0;
+    margin: var(--space-4) 0 0;
     font-size: 0.76rem;
     color: var(--text-tertiary);
     line-height: 1.5;
   }
 
   .clause-legend {
-    margin: 1rem 0 0;
-    padding-top: 0.9rem;
+    margin: var(--space-4) 0 0;
+    padding-top: var(--space-4);
     border-top: 1px solid var(--border-default);
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.55rem 1.2rem;
+    gap: var(--space-2) var(--space-5);
   }
 
   @media (max-width: 560px) {
@@ -228,9 +444,17 @@
     }
   }
 
+  .clause-empty {
+    margin: var(--space-4) 0 0;
+    padding-top: var(--space-4);
+    border-top: 1px solid var(--border-default);
+    font-size: 0.78rem;
+    color: var(--text-tertiary);
+  }
+
   .clause-row {
     display: flex;
-    gap: 0.5rem;
+    gap: var(--space-2);
     align-items: baseline;
     font-size: 0.76rem;
     line-height: 1.4;
@@ -256,10 +480,28 @@
     color: var(--text-faint);
   }
 
+  /* Icon glyph on any .note rendered by this page (the descriptor's own note,
+     now living in the visibility panel, and the demo-data caution in the
+     footer) reads in the brand accent either way. */
+  .note span[aria-hidden] {
+    color: var(--accent);
+  }
+
+  /* ---------- metric cards ---------- */
+  .stat-section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .stat-section-label {
+    padding-left: var(--space-1);
+  }
+
   .stat-grid {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 1rem;
+    gap: var(--space-4);
   }
 
   @media (max-width: 760px) {
@@ -280,10 +522,6 @@
   .footer-notes {
     display: flex;
     flex-direction: column;
-    gap: 0.7rem;
-  }
-
-  .footer-notes .note span[aria-hidden] {
-    color: var(--accent);
+    gap: var(--space-3);
   }
 </style>
