@@ -81,22 +81,24 @@
   <aside class="nav" class:open={drawerOpen} bind:this={navEl} tabindex="-1">
     <div class="brandblock">
       <div class="mark" aria-hidden="true">
-        <!-- Ephor mark: a comma drawn so it reads as a lowercase "e" — the
-             product's initial (brand/logo-mark.svg). The bowl and crossbar
-             form the e; its lower terminal continues into the comma's tail. -->
-        <svg viewBox="0 0 128 128" fill="none">
-          <rect x="0" y="0" width="128" height="128" rx="28" fill="url(#g)"/>
-          <g fill="none" stroke="#C89A56" stroke-width="15" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M40 60 H83"/>
-            <path d="M83 60 A29 29 0 1 0 72 86"/>
-            <path d="M72 86 Q 80 104 58 112"/>
-          </g>
+        <!-- The Ephor mark (brand/ephor.svg): a comma whose notch opens it into
+             a lowercase "e". currentColor, tinted by .mark so it holds up on
+             both the near-black and the warm-paper canvas. -->
+        <svg viewBox="14 5 72 92" role="presentation">
           <defs>
-            <linearGradient id="g" x1="0" y1="0" x2="128" y2="128" gradientUnits="userSpaceOnUse">
-              <stop offset="0" stop-color="#14171f"/>
-              <stop offset="1" stop-color="#08090c"/>
-            </linearGradient>
+            <mask id="shell-mark-cut">
+              <rect x="-40" y="-40" width="200" height="200" fill="#fff"/>
+              <rect x="31.5" y="29" width="32" height="14" rx="3" fill="#000"
+                    transform="translate(16 5) rotate(200 47.5 36)"/>
+            </mask>
           </defs>
+          <g mask="url(#shell-mark-cut)" fill="currentColor">
+            <g transform="rotate(350 50 50) translate(100 0) scale(-1 1)">
+              <path d="M 50,10 C 68,10 80,23 80,41 C 80,64 64,82 46,90 C 40,93 35,85 40,81
+                       C 51,73 57,65 60,56 C 55,61 48,63 41,62 C 28,60 20,51 20,39
+                       C 20,23 32,10 50,10 Z"/>
+            </g>
+          </g>
         </svg>
       </div>
       <div class="wordblock">

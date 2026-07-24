@@ -1,6 +1,10 @@
-<svg viewBox="14 5 72 92" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Ephor">
-  <title>Ephor (monochrome)</title>
-  <desc>The comma-e glyph in a single colour via currentColor, for use on light or dark surfaces.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="14 5 72 92" width="288" height="368" role="img" aria-label="Ephor">
+  <title>Ephor</title>
+  <!-- The Ephor mark: a comma whose notch opens it into a lowercase "e".
+       Filled with currentColor so ONE file serves every surface and both
+       themes — set `color` on the parent. A hardcoded fill cannot work here:
+       white vanishes on the warm-paper light canvas, near-black vanishes on
+       the #0c0c0c dark canvas. -->
   <defs>
     <mask id="ephor-cut">
       <rect x="-40" y="-40" width="200" height="200" fill="#fff"/>

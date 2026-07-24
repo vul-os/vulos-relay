@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="14 5 130 92" width="520" height="368" role="img" aria-label="Ephor">
+  <title>Ephor</title>
+  <!-- The paired mark: two commas turned to face each other — the broker's
+       shape, two parties with the mark standing between them.
+       Both halves are currentColor; the trailing half carries the original
+       artwork's muted relationship as an opacity rather than a second fixed
+       grey, so the pairing survives on any surface and in both themes. A
+       fixed #2C2C2A leading half disappeared against the #0c0c0c canvas. -->
+  <defs>
+    <mask id="ephor-cut-a">
+      <rect x="-40" y="-40" width="240" height="240" fill="#fff"/>
+      <rect x="31.5" y="29" width="32" height="14" rx="3" fill="#000"
+            transform="translate(16 5) rotate(200 47.5 36)"/>
+    </mask>
+    <mask id="ephor-cut-b">
+      <rect x="-40" y="-40" width="240" height="240" fill="#fff"/>
+      <rect x="31.5" y="29" width="32" height="14" rx="3" fill="#000"
+            transform="translate(16 5) rotate(200 47.5 36)"/>
+    </mask>
+  </defs>
+  <g mask="url(#ephor-cut-a)" fill="currentColor">
+    <g transform="rotate(350 50 50) translate(100 0) scale(-1 1)">
+      <path d="M 50,10 C 68,10 80,23 80,41 C 80,64 64,82 46,90 C 40,93 35,85 40,81
+               C 51,73 57,65 60,56 C 55,61 48,63 41,62 C 28,60 20,51 20,39
+               C 20,23 32,10 50,10 Z"/>
+    </g>
+  </g>
+  <g transform="translate(158 0) scale(-1 1)">
+    <g mask="url(#ephor-cut-b)" fill="currentColor" opacity="0.5">
+      <g transform="rotate(350 50 50) translate(100 0) scale(-1 1)">
+        <path d="M 50,10 C 68,10 80,23 80,41 C 80,64 64,82 46,90 C 40,93 35,85 40,81
+                 C 51,73 57,65 60,56 C 55,61 48,63 41,62 C 28,60 20,51 20,39
+                 C 20,23 32,10 50,10 Z"/>
+      </g>
+    </g>
+  </g>
+</svg>

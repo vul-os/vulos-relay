@@ -1,6 +1,6 @@
 <svg viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Ephor">
   <title>Ephor</title>
-  <desc>A single comma drawn so it reads as a lowercase "e" — the initial of Ephor. The bowl and crossbar form the e; the lower terminal continues into the comma's tail. One continuous bronze gesture: the mark both punctuates and names.</desc>
+  <desc>The Ephor comma mark — a bold comma whose notch opens it into a lowercase "e" — centred on the near-black app tile in bronze.</desc>
   <defs>
     <linearGradient id="eph-tile" x1="0" y1="0" x2="128" y2="128" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#14171f"/>
@@ -9,13 +9,21 @@
   </defs>
   <!-- near-black tile, matching Vulos OS chrome -->
   <rect x="0" y="0" width="128" height="128" rx="28" fill="url(#eph-tile)"/>
-  <!-- the comma-e, drawn as one weight of bronze stroke -->
-  <g fill="none" stroke="#C89A56" stroke-width="15" stroke-linecap="round" stroke-linejoin="round">
-    <!-- crossbar of the e -->
-    <path d="M40 60 H83"/>
-    <!-- bowl: aperture left open at lower-right, the arc sweeping the long way round -->
-    <path d="M83 60 A29 29 0 1 0 72 86"/>
-    <!-- the comma's tail, hooking down from the terminal -->
-    <path d="M72 86 Q 80 104 58 112"/>
-  </g>
+  <!-- the comma-e mark, in Ephor bronze, centred on the tile -->
+  <svg x="29.57" y="20" width="68.87" height="88" viewBox="14 5 72 92">
+    <defs>
+      <mask id="ephor-cut">
+        <rect x="-40" y="-40" width="200" height="200" fill="#fff"/>
+        <rect x="31.5" y="29" width="32" height="14" rx="3" fill="#000"
+              transform="translate(16 5) rotate(200 47.5 36)"/>
+      </mask>
+    </defs>
+    <g mask="url(#ephor-cut)" fill="#C89A56">
+      <g transform="rotate(350 50 50) translate(100 0) scale(-1 1)">
+        <path d="M 50,10 C 68,10 80,23 80,41 C 80,64 64,82 46,90 C 40,93 35,85 40,81
+                 C 51,73 57,65 60,56 C 55,61 48,63 41,62 C 28,60 20,51 20,39
+                 C 20,23 32,10 50,10 Z"/>
+      </g>
+    </g>
+  </svg>
 </svg>
