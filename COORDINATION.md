@@ -73,6 +73,37 @@ key numbering, the text-vs-integer choice for `kind`/`visibility.class`/`visibil
 (chose text for readability/extensibility over kotva-core's usual small-int discriminants), or
 the per-object self-certification should change — nothing is wire-frozen yet outside this repo.
 
+[2026-07-24 wire] ✓ RESOLVED (self-fix) — **`broker-economics` now implements the ratified
+§18.8a `CoordinatorDescriptor`/`Tariff`/`UsageReceipt` layout exactly, replacing the `EPHOR-v0/...`
+placeholder from the `[2026-07-23 wire]` entry above.** The two had drifted: this crate kept
+signing the pre-ratification layout (no `suite` field, one key number lower across the board, and
+`EPHOR-v0/...` DS tags) after §18.8a/§18.9 ratified a different one — so Ephor was wire-incompatible
+with the spec it implements. Fixed in `crates/broker-economics/src/descriptor.rs`: added `suite`
+(key 1, every object), shifted every other key up by one accordingly, added `Tariff.valid_until`
+(key 4, OPTIONAL, absent ⇒ no expiry, enforced fail-closed on `Tariff::verify()` against the wall
+clock), and switched all three DS tags to `DMTAP-COORD-v0/{descriptor,tariff,usage-receipt}` per
+the §18.9 preimage table. `suite` is decoded strictly (absent ⇒ hard reject, any non-`0x01` value
+⇒ hard reject) — never defaulted, never guessed at. Added tests proving an object built under the
+OLD layout/DS-tag does NOT verify under the new code (for all three object types), plus suite/
+expiry/unknown-key fail-closed coverage. Zero call-site changes needed anywhere else in the
+workspace (`Descriptor`/`Tariff::sign`/`UsageReceipt::sign`'s public shapes are unchanged; `suite`
+and the layout shift are wire-internal to `to_cv`/`from_cv`) — `cargo test --workspace` and
+`cargo clippy --workspace --all-targets` both clean.
+
+**Honest residual, not closed by this fix (§1.1/§18.1.4):** this crate emits and can only verify
+suite `0x01` (classical Ed25519) — §18.1.4 marks `0x01` **LEGACY, verify-only, MUST NOT
+originate** and `0x02` (Ed25519+ML-DSA-65 hybrid) the **v0 REQUIRED originating suite**. The
+pinned `kotva-core@core-v0.2.0` has no `0x02` verification path for this object family (checked
+directly: `kotva_core::suite::Suite::is_supported()` — the predicate the multi-suite `Identity`
+object machinery gates on — returns `true` only for `Suite::Classical`; `crates/kotva-core/src/
+identity.rs`/`suite.rs` confirm `0x02` fails closed there too). Ephor cannot close this from its
+own side — it needs `kotva-core` to implement `0x02` signing/verification for this object family.
+Not silently working around it: `suite = 0x01` is emitted with an explicit disclosure comment at
+the constant, and any other suite (including a well-formed `0x02`) is rejected fail-closed on
+decode, never accepted as if `0x01` were spec-conformant origination. Flag if the spec session
+wants a formal tracked exception/waiver for this gap rather than an in-code + coordination-log
+disclosure.
+
 [2026-07-23 sense-check] **Fresh independent deep-research sense-check of the spec (CONTRACT,
 DIRECTION, THREAT-MODEL, reachability/media/rtc profiles, bindings, docs/research, substrate/,
 §01/§02/§18 skim). Verdict: sound and well-grounded — one real, fixable contradiction found; rest
